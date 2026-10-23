@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { 
+"use client";
+
+import React, { useState } from 'react';import { 
   Mountain, 
   Search, 
   Trophy, 
