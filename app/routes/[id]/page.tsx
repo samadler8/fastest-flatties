@@ -39,6 +39,7 @@ type GroupedEffort = {
   category_tags: string[];
   athletes: Array<{ id: string; name: string }>;
   timeDiff?: string;
+  isRecordBreaker?: boolean;
 };
 
 export default async function RoutePage({ 
@@ -48,7 +49,7 @@ export default async function RoutePage({
 }) {
   const { id } = await params;
 
-  // 1. Fetch Route Details
+  // 1. Fetch Route
   const { data: route, error: routeError } = await supabase
     .from("routes")
     .select("*")
@@ -59,7 +60,7 @@ export default async function RoutePage({
     console.error("Supabase Route Query Error:", routeError.message);
   }
 
-  // 2. Fetch Verified Efforts
+  // 2. Fetch Verified Efforts ordered by date
   const { data: rawEfforts, error: effortError } = await supabase
     .from("efforts")
     .select("*, athlete:athletes(*)")
@@ -84,7 +85,7 @@ export default async function RoutePage({
     );
   }
 
-  // Group joint efforts (athletes sharing exact time & date)
+  // Group joint efforts (athletes sharing exact time, date, & categories)
   const groupedMap = new Map<string, GroupedEffort>();
 
   if (rawEfforts) {
@@ -112,15 +113,61 @@ export default async function RoutePage({
   const groupedEfforts = Array.from(groupedMap.values());
   const leaderboard = [...groupedEfforts].sort((a, b) => a.time_seconds - b.time_seconds);
 
-  // FKT History Timeline calculation
+  // --------------------------------------------------------------------------
+  // CALCULATE FKT RECORD HISTORY (WITH CROSS-SUPPORT VALIDATION RULE)
+  // --------------------------------------------------------------------------
+  // Track current record per (Gender/Format x SupportStyle)
+  const fastestTimes: Record<string, number> = {}; 
   const recordHistory: GroupedEffort[] = [];
-  let fastestTimeSoFar = Infinity;
 
   groupedEfforts.forEach((effort) => {
-    if (effort.time_seconds < fastestTimeSoFar) {
-      const diff = fastestTimeSoFar === Infinity ? "Initial Benchmark Record" : formatTimeDiff(fastestTimeSoFar - effort.time_seconds);
-      fastestTimeSoFar = effort.time_seconds;
-      recordHistory.push({ ...effort, timeDiff: diff });
+    const isSupported = effort.category_tags.includes("Supported");
+    const isUnsupported = effort.category_tags.includes("Unsupported");
+
+    // Extract primary category (Male, Female, Non-Binary, or Team)
+    const primaryCat = effort.category_tags.find(t => 
+      ["Male", "Female", "Non-Binary", "Team"].includes(t)
+    ) || "Overall";
+
+    const catSupportedKey = `${primaryCat}_Supported`;
+    const catUnsupportedKey = `${primaryCat}_Unsupported`;
+
+    const prevSupportedBest = fastestTimes[catSupportedKey] || Infinity;
+    const currentUnsupportedBest = fastestTimes[catUnsupportedKey] || Infinity;
+
+    let qualifiesAsRecord = false;
+
+    if (isUnsupported) {
+      // Unsupported records only need to beat previous Unsupported time
+      if (effort.time_seconds < currentUnsupportedBest) {
+        qualifiesAsRecord = true;
+        fastestTimes[catUnsupportedKey] = effort.time_seconds;
+      }
+    } else if (isSupported) {
+      // RULE: Supported effort ONLY counts as a record if it beats BOTH
+      // 1. Previous Supported record AND
+      // 2. Current Unsupported record for that gender/category
+      if (
+        effort.time_seconds < prevSupportedBest && 
+        effort.time_seconds < currentUnsupportedBest
+      ) {
+        qualifiesAsRecord = true;
+        fastestTimes[catSupportedKey] = effort.time_seconds;
+      }
+    } else {
+      // General fallback if no support tag specified
+      const genKey = `${primaryCat}_Overall`;
+      if (effort.time_seconds < (fastestTimes[genKey] || Infinity)) {
+        qualifiesAsRecord = true;
+        fastestTimes[genKey] = effort.time_seconds;
+      }
+    }
+
+    if (qualifiesAsRecord) {
+      recordHistory.push({
+        ...effort,
+        isRecordBreaker: true
+      });
     }
   });
 
@@ -133,7 +180,7 @@ export default async function RoutePage({
 
   return (
     <div className="min-h-screen bg-sandstone-950 text-sandstone-100 font-serif pb-20">
-      {/* Navigation Header */}
+      {/* Header Bar */}
       <div className="border-b-2 border-flatiron-red/40 bg-sandstone-900/90 backdrop-blur-md sticky top-0 z-40 shadow-lg">
         <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
           <Link href="/" className="inline-flex items-center font-mono text-xs uppercase tracking-widest text-sandstone-400 hover:text-flatiron-red transition-colors">
@@ -179,7 +226,7 @@ export default async function RoutePage({
           )}
         </div>
 
-        {/* Current Leaderboard */}
+        {/* Current Speed Leaderboard */}
         <div>
           <h2 className="text-2xl font-serif font-bold text-sandstone-100 mb-4 flex items-center gap-2">
             <Trophy size={22} className="text-flatiron-gold" /> Current Leaderboard
@@ -247,6 +294,62 @@ export default async function RoutePage({
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+
+        {/* Verified FKT History Timeline */}
+        <div>
+          <h2 className="text-2xl font-serif font-bold text-sandstone-100 mb-2 flex items-center gap-2">
+            <History size={22} className="text-flatiron-ochre" /> Verified FKT Progression History
+          </h2>
+          <p className="font-mono text-xs text-sandstone-400 mb-4">
+            * Supported attempts only qualify as record-breakers if they surpass the existing Unsupported time for that category.
+          </p>
+
+          <div className="bg-sandstone-900 border-2 border-sandstone-800 p-6 shadow-2xl">
+            {recordHistory.length > 0 ? (
+              <div className="relative border-l-2 border-sandstone-800 ml-4 space-y-6 pl-6">
+                {recordHistory.map((rec) => (
+                  <div key={rec.id} className="relative group">
+                    <div className="absolute -left-[31px] top-1.5 w-3 h-3 bg-flatiron-red border-2 border-sandstone-950 rounded-full group-hover:scale-125 transition-transform" />
+                    
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-sandstone-950 border border-sandstone-800 p-4">
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="font-serif font-bold text-lg text-sandstone-100">
+                            {rec.athletes.map((a, aIdx) => (
+                              <span key={a.id}>
+                                {a.name}
+                                {aIdx < rec.athletes.length - 1 && " & "}
+                              </span>
+                            ))}
+                          </span>
+                        </div>
+                        <div className="font-mono text-xs text-sandstone-400 flex items-center gap-2 flex-wrap">
+                          <span>DATE: {rec.activity_date}</span>
+                          <span>|</span>
+                          <div className="flex gap-1">
+                            {rec.category_tags.map(t => (
+                              <span key={t} className="text-flatiron-ochre uppercase font-bold bg-sandstone-900 px-1.5 py-0.5 border border-sandstone-800">
+                                {t}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="font-mono text-xl font-bold text-flatiron-red">
+                        {rec.formatted_time}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="font-mono text-xs text-sandstone-400 text-center py-4">
+                [ NO HISTORICAL FKT PROGRESSION RECORDED ]
+              </p>
+            )}
           </div>
         </div>
 
