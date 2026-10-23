@@ -3,22 +3,18 @@ import GPXMap from "@/components/GPXMap";
 import { 
   Mountain, 
   MapPin, 
-  TrendingUp, 
   Trophy, 
   Clock, 
   Download, 
   ArrowLeft, 
   ShieldCheck, 
   Flag, 
-  Camera,
-  History,
-  Tag
+  History 
 } from "lucide-react";
 import Link from "next/link";
 
 export const dynamic = 'force-dynamic';
 
-// Helper to format seconds differential into readable time string (e.g. "-1h 22m")
 function formatTimeDiff(seconds: number) {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -27,6 +23,18 @@ function formatTimeDiff(seconds: number) {
   if (m > 0) return `-${m}m ${s}s`;
   return `-${s}s`;
 }
+
+type GroupedEffort = {
+  id: string;
+  time_seconds: number;
+  formatted_time: string;
+  activity_date: string;
+  gpx_url?: string;
+  gender?: string;
+  support_type?: string;
+  athletes: Array<{ id: string; name: string }>;
+  timeDiff?: string;
+};
 
 export default async function RoutePage({ 
   params 
@@ -46,8 +54,8 @@ export default async function RoutePage({
     console.error("Supabase Route Query Error:", routeError.message);
   }
 
-  // 2. Fetch all verified efforts sorted by activity_date (for Record History)
-  const { data: efforts, error: effortError } = await supabase
+  // 2. Fetch all verified efforts sorted by activity_date and time
+  const { data: rawEfforts, error: effortError } = await supabase
     .from("efforts")
     .select("*, athlete:athletes(*)")
     .eq("route_id", id)
@@ -71,27 +79,52 @@ export default async function RoutePage({
     );
   }
 
-  // Calculate Speed Leaderboard (sorted by time_seconds ASC)
-  const leaderboard = efforts ? [...efforts].sort((a, b) => a.time_seconds - b.time_seconds) : [];
+  // 3. Group joint efforts (athletes sharing the exact same time & date)
+  const groupedMap = new Map<string, GroupedEffort>();
 
-  // Calculate Chronological Record History (FKT Progression)
-  const recordHistory: Array<typeof leaderboard[0] & { timeDiff?: string }> = [];
-  let fastestTimeSoFar = Infinity;
-
-  if (efforts) {
-    efforts.forEach((effort) => {
-      if (effort.time_seconds < fastestTimeSoFar) {
-        const diff = fastestTimeSoFar === Infinity ? null : formatTimeDiff(fastestTimeSoFar - effort.time_seconds);
-        fastestTimeSoFar = effort.time_seconds;
-        recordHistory.push({
-          ...effort,
-          timeDiff: diff || "Initial Benchmark Record"
+  if (rawEfforts) {
+    rawEfforts.forEach((e) => {
+      const groupKey = `${e.time_seconds}_${e.activity_date}`;
+      if (groupedMap.has(groupKey)) {
+        const existing = groupedMap.get(groupKey)!;
+        if (e.athlete && !existing.athletes.some(a => a.id === e.athlete.id)) {
+          existing.athletes.push({ id: e.athlete.id, name: e.athlete.name });
+        }
+      } else {
+        groupedMap.set(groupKey, {
+          id: e.id,
+          time_seconds: e.time_seconds,
+          formatted_time: e.formatted_time,
+          activity_date: e.activity_date,
+          gpx_url: e.gpx_url,
+          gender: e.gender || 'Male',
+          support_type: e.support_type || 'Unsupported',
+          athletes: e.athlete ? [{ id: e.athlete.id, name: e.athlete.name }] : []
         });
       }
     });
   }
 
-  // Reverse history so newest records appear on top
+  const groupedEfforts = Array.from(groupedMap.values());
+
+  // Calculate Leaderboard (Sorted by fastest time ASC)
+  const leaderboard = [...groupedEfforts].sort((a, b) => a.time_seconds - b.time_seconds);
+
+  // Calculate FKT Record History Timeline
+  const recordHistory: GroupedEffort[] = [];
+  let fastestTimeSoFar = Infinity;
+
+  groupedEfforts.forEach((effort) => {
+    if (effort.time_seconds < fastestTimeSoFar) {
+      const diff = fastestTimeSoFar === Infinity ? "Initial Benchmark Record" : formatTimeDiff(fastestTimeSoFar - effort.time_seconds);
+      fastestTimeSoFar = effort.time_seconds;
+      recordHistory.push({
+        ...effort,
+        timeDiff: diff
+      });
+    }
+  });
+
   recordHistory.reverse();
 
   const rulesList = route.rules 
@@ -146,7 +179,7 @@ export default async function RoutePage({
           )}
         </div>
 
-        {/* Section 1: Current Speed Leaderboard */}
+        {/* Current Speed Leaderboard */}
         <div>
           <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-2">
             <h2 className="text-2xl font-serif font-bold text-sandstone-100 flex items-center gap-2">
@@ -162,7 +195,7 @@ export default async function RoutePage({
               <thead className="bg-sandstone-950 text-flatiron-ochre uppercase border-b-2 border-sandstone-800">
                 <tr>
                   <th className="px-6 py-4">RANK</th>
-                  <th className="px-6 py-4">ATHLETE</th>
+                  <th className="px-6 py-4">ATHLETE(S)</th>
                   <th className="px-6 py-4">CATEGORY</th>
                   <th className="px-6 py-4">TIME</th>
                   <th className="px-6 py-4">DATE</th>
@@ -177,21 +210,26 @@ export default async function RoutePage({
                         {idx === 0 ? "01 [FKT 👑]" : `#0${idx + 1}`}
                       </td>
                       <td className="px-6 py-4 font-serif text-base font-bold text-sandstone-100">
-                        {effort.athlete?.id ? (
-                          <Link href={`/athletes/${effort.athlete.id}`} className="hover:text-flatiron-red transition-colors">
-                            {effort.athlete.name}
-                          </Link>
+                        {effort.athletes.length > 0 ? (
+                          effort.athletes.map((a, aIdx) => (
+                            <span key={a.id}>
+                              <Link href={`/athletes/${a.id}`} className="hover:text-flatiron-red transition-colors">
+                                {a.name}
+                              </Link>
+                              {aIdx < effort.athletes.length - 1 && " & "}
+                            </span>
+                          ))
                         ) : (
-                          effort.athlete?.name || "Unknown Athlete"
+                          "Unknown Athlete"
                         )}
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex gap-1.5 flex-wrap">
                           <span className="bg-sandstone-950 border border-sandstone-700 text-sandstone-300 px-2 py-0.5 rounded text-[10px] uppercase font-bold">
-                            {effort.gender || 'Male'}
+                            {effort.gender}
                           </span>
                           <span className="bg-flatiron-rust/30 border border-flatiron-red/50 text-flatiron-red px-2 py-0.5 rounded text-[10px] uppercase font-bold">
-                            {effort.support_type || 'Unsupported'}
+                            {effort.support_type}
                           </span>
                         </div>
                       </td>
@@ -222,7 +260,7 @@ export default async function RoutePage({
           </div>
         </div>
 
-        {/* Section 2: FKT Record Progression History */}
+        {/* FKT Record History Timeline */}
         <div>
           <h2 className="text-2xl font-serif font-bold text-sandstone-100 mb-4 flex items-center gap-2">
             <History size={22} className="text-flatiron-ochre" /> FKT Record History Timeline
@@ -233,14 +271,18 @@ export default async function RoutePage({
               <div className="relative border-l-2 border-sandstone-800 ml-4 space-y-8 pl-6">
                 {recordHistory.map((rec) => (
                   <div key={rec.id} className="relative group">
-                    {/* Timeline Node */}
                     <div className="absolute -left-[31px] top-1.5 w-3 h-3 bg-flatiron-red border-2 border-sandstone-950 rounded-full group-hover:scale-125 transition-transform" />
                     
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-sandstone-950 border border-sandstone-800 p-4">
                       <div>
                         <div className="flex items-center gap-2 mb-1">
                           <span className="font-serif font-bold text-lg text-sandstone-100">
-                            {rec.athlete?.name}
+                            {rec.athletes.map((a, aIdx) => (
+                              <span key={a.id}>
+                                {a.name}
+                                {aIdx < rec.athletes.length - 1 && " & "}
+                              </span>
+                            ))}
                           </span>
                           <span className="font-mono text-xs text-flatiron-gold bg-sandstone-900 px-2 py-0.5 border border-sandstone-800">
                             {rec.timeDiff}
@@ -268,7 +310,7 @@ export default async function RoutePage({
           </div>
         </div>
 
-        {/* Documentation & Rules */}
+        {/* Start/Finish & Rules */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {route.start_finish && (
             <div className="bg-sandstone-900 border-2 border-sandstone-800 p-6 shadow-xl">
