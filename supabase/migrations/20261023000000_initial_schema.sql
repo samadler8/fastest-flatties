@@ -41,7 +41,12 @@ ALTER TABLE routes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE athletes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE efforts ENABLE ROW LEVEL SECURITY;
 
--- Public Read Access Policies
+-- Public Read Access Policies (Safely drop if already created)
+DROP POLICY IF EXISTS "Allow public read access on routes" ON routes;
 CREATE POLICY "Allow public read access on routes" ON routes FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Allow public read access on athletes" ON athletes;
 CREATE POLICY "Allow public read access on athletes" ON athletes FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Allow public read access on efforts" ON efforts;
 CREATE POLICY "Allow public read access on efforts" ON efforts FOR SELECT USING (true);
