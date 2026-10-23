@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState } from 'react';import { 
+import React, { useState } from 'react';
+import { 
   Mountain, 
   Search, 
   Trophy, 
@@ -10,77 +11,88 @@ import React, { useState } from 'react';import {
   Menu,
   X,
   ChevronRight,
-  ArrowRight
+  ArrowRight,
+  User,
+  ShieldCheck
 } from 'lucide-react';
 
 const routesData = [
   {
-    id: 1,
+    id: '1st-flatiron-direct',
     name: '1st Flatiron Direct',
     distance: '1.2 mi',
     elevation: '1,050 ft',
-    fktHolder: 'Alex Honnold',
-    fktTime: '32:14',
+    recordHolder: 'Alex Honnold',
+    fastestTime: '32:14',
     image: 'https://images.unsplash.com/photo-1598974609653-53d719597274?auto=format&fit=crop&q=80&w=800',
-    difficulty: 'Hard'
+    difficulty: 'Hard',
+    description: 'The iconic East Face scramble up the First Flatiron, starting from Chautauqua trailhead.'
   },
   {
-    id: 2,
+    id: '2nd-flatiron-freeway',
     name: '2nd Flatiron Freeway',
     distance: '1.5 mi',
     elevation: '1,120 ft',
-    fktHolder: 'Anton Krupicka',
-    fktTime: '36:45',
+    recordHolder: 'Anton Krupicka',
+    fastestTime: '36:45',
     image: 'https://images.unsplash.com/photo-1566810235336-07fb905a5a14?auto=format&fit=crop&q=80&w=800',
-    difficulty: 'Moderate'
+    difficulty: 'Moderate',
+    description: 'Classic scramble featuring wide slab running and breathtaking views of Boulder.'
   },
   {
-    id: 3,
+    id: '3rd-flatiron-standard',
     name: '3rd Flatiron Standard',
     distance: '1.4 mi',
     elevation: '1,250 ft',
-    fktHolder: 'Kilian Jornet',
-    fktTime: '29:50',
+    recordHolder: 'Kilian Jornet',
+    fastestTime: '29:50',
     image: 'https://images.unsplash.com/photo-1588147514731-1520e54d3209?auto=format&fit=crop&q=80&w=800',
-    difficulty: 'Expert'
+    difficulty: 'Expert',
+    description: 'Steeper and longer slab climbing with a rappelling descent off the summit.'
   },
   {
-    id: 4,
+    id: 'green-mountain-gregory',
     name: 'Green Mountain via Gregory',
     distance: '3.2 mi',
     elevation: '2,200 ft',
-    fktHolder: 'Joe Grant',
-    fktTime: '42:10',
+    recordHolder: 'Joe Grant',
+    fastestTime: '42:10',
     image: 'https://images.unsplash.com/photo-1627918451876-06ee79d63c52?auto=format&fit=crop&q=80&w=800',
-    difficulty: 'Strenuous'
+    difficulty: 'Strenuous',
+    description: 'Heavy vertical effort up Gregory Canyon to the Green Mountain summit block.'
   }
 ];
 
-export default function App() {
+export default function Home() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
+  const filteredRoutes = routesData.filter(route => 
+    route.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    route.description.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
   return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
+    <div className="min-h-screen bg-slate-950 font-sans text-slate-100">
       {/* Navigation Header */}
-      <nav className="fixed w-full z-50 bg-white/90 backdrop-blur-md border-b border-slate-200">
+      <nav className="fixed w-full z-50 bg-slate-950/80 backdrop-blur-md border-b border-slate-800">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
             {/* Logo */}
-            <div className="flex-shrink-0 flex items-center gap-2 cursor-pointer">
-              <div className="bg-emerald-600 p-2 rounded-lg text-white">
-                <Mountain size={24} strokeWidth={2.5} />
+            <a href="/" className="flex-shrink-0 flex items-center gap-2 cursor-pointer">
+              <div className="bg-emerald-500 p-2 rounded-xl text-slate-950 font-bold">
+                <Mountain size={22} strokeWidth={2.5} />
               </div>
-              <span className="font-bold text-xl tracking-tight text-slate-800">
-                Fastest <span className="text-emerald-600">Fatties</span>
+              <span className="font-extrabold text-xl tracking-tight text-white">
+                Fastest <span className="text-emerald-400">Fatties</span>
               </span>
-            </div>
+            </a>
 
             {/* Desktop Navigation */}
             <div className="hidden md:flex space-x-8 items-center">
-              <a href="#" className="text-slate-600 hover:text-emerald-600 font-medium transition-colors">Routes</a>
-              <a href="#" className="text-slate-600 hover:text-emerald-600 font-medium transition-colors">Leaderboards</a>
-              <a href="#" className="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 rounded-full font-medium transition-all shadow-sm shadow-emerald-200">
+              <a href="#routes" className="text-slate-300 hover:text-emerald-400 font-medium transition-colors">Routes</a>
+              <a href="#leaderboards" className="text-slate-300 hover:text-emerald-400 font-medium transition-colors">Leaderboards</a>
+              <a href="/submit" className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-5 py-2 rounded-full font-semibold transition-all shadow-lg shadow-emerald-500/20">
                 Submit Time
               </a>
             </div>
@@ -89,7 +101,7 @@ export default function App() {
             <div className="md:hidden flex items-center">
               <button 
                 onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-                className="text-slate-600 hover:text-slate-900 p-2"
+                className="text-slate-300 hover:text-white p-2"
               >
                 {isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
               </button>
@@ -99,10 +111,10 @@ export default function App() {
 
         {/* Mobile Navigation */}
         {isMobileMenuOpen && (
-          <div className="md:hidden bg-white border-t border-slate-100 px-4 pt-2 pb-6 space-y-3 shadow-lg">
-            <a href="#" className="block px-3 py-2 text-base font-medium text-slate-700 hover:text-emerald-600 hover:bg-slate-50 rounded-md">Routes</a>
-            <a href="#" className="block px-3 py-2 text-base font-medium text-slate-700 hover:text-emerald-600 hover:bg-slate-50 rounded-md">Leaderboards</a>
-            <a href="#" className="block mt-4 w-full text-center bg-emerald-600 text-white px-5 py-3 rounded-xl font-medium shadow-sm">
+          <div className="md:hidden bg-slate-900 border-t border-slate-800 px-4 pt-2 pb-6 space-y-3">
+            <a href="#routes" className="block px-3 py-2 text-base font-medium text-slate-200 hover:text-emerald-400">Routes</a>
+            <a href="#leaderboards" className="block px-3 py-2 text-base font-medium text-slate-200 hover:text-emerald-400">Leaderboards</a>
+            <a href="/submit" className="block mt-4 w-full text-center bg-emerald-500 text-slate-950 font-semibold px-5 py-3 rounded-xl shadow-md">
               Submit Time
             </a>
           </div>
@@ -110,26 +122,25 @@ export default function App() {
       </nav>
 
       {/* Hero Section */}
-      <div className="relative pt-16 pb-32 flex content-center items-center justify-center min-h-[70vh]">
+      <div className="relative pt-24 pb-20 flex items-center justify-center min-h-[65vh]">
         <div 
-          className="absolute top-0 w-full h-full bg-center bg-cover"
+          className="absolute inset-0 bg-center bg-cover opacity-30"
           style={{
             backgroundImage: "url('https://images.unsplash.com/photo-1598974609653-53d719597274?auto=format&fit=crop&q=80&w=2000')"
           }}
-        >
-          <span className="w-full h-full absolute opacity-60 bg-gradient-to-b from-slate-900 via-slate-800 to-slate-900"></span>
-        </div>
+        />
+        <div className="absolute inset-0 bg-gradient-to-b from-slate-950/60 via-slate-950/90 to-slate-950" />
         
-        <div className="container relative mx-auto px-4 text-center">
+        <div className="container relative mx-auto px-4 text-center z-10">
           <div className="max-w-3xl mx-auto flex flex-col items-center">
-            <span className="inline-block py-1 px-3 rounded-full bg-emerald-500/20 text-emerald-300 font-semibold text-sm mb-4 border border-emerald-500/30 backdrop-blur-sm">
-              Boulder, Colorado
+            <span className="inline-flex items-center gap-1.5 py-1 px-3.5 rounded-full bg-emerald-500/10 text-emerald-400 font-semibold text-xs mb-6 border border-emerald-500/20 backdrop-blur-sm">
+              <MapPin size={14} /> Boulder, Colorado
             </span>
-            <h1 className="text-4xl sm:text-5xl md:text-6xl font-extrabold text-white tracking-tight mb-6 drop-shadow-lg">
-              Boulder Flatirons <br className="hidden sm:block"/> FKT Tracker
+            <h1 className="text-4xl sm:text-6xl font-black text-white tracking-tight mb-6 leading-tight">
+              Boulder Flatirons <br className="hidden sm:block"/> Route & Speed Records
             </h1>
-            <p className="mt-4 text-lg sm:text-xl text-slate-200 mb-10 max-w-2xl font-light drop-shadow">
-              Discover, track, and conquer the Fastest Known Times on the most iconic scrambles and trails in the Flatirons.
+            <p className="text-lg sm:text-xl text-slate-400 mb-10 max-w-2xl font-normal leading-relaxed">
+              Discover, track, and submit speed records for the iconic scrambles, loops, and summit pushes in the Boulder Flatirons.
             </p>
             
             {/* Search Bar */}
@@ -142,112 +153,90 @@ export default function App() {
                 placeholder="Search routes (e.g., 1st Flatiron, Green Mountain)..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-12 pr-4 py-4 rounded-2xl bg-white/95 backdrop-blur shadow-2xl border-0 focus:ring-4 focus:ring-emerald-500/30 outline-none text-slate-800 placeholder-slate-400 transition-all text-lg"
+                className="w-full pl-12 pr-12 py-4 rounded-2xl bg-slate-900/90 border border-slate-800 focus:border-emerald-500/50 focus:ring-4 focus:ring-emerald-500/10 outline-none text-white placeholder-slate-500 transition-all text-base shadow-xl"
               />
-              <button className="absolute right-2 bg-emerald-600 hover:bg-emerald-700 text-white p-2.5 rounded-xl transition-colors">
-                <ArrowRight size={20} />
-              </button>
             </div>
           </div>
-        </div>
-        
-        {/* Curved bottom edge */}
-        <div className="absolute bottom-0 left-0 right-0 w-full overflow-hidden leading-none z-10 text-slate-50">
-          <svg viewBox="0 0 1200 120" preserveAspectRatio="none" className="w-full h-12 sm:h-24 fill-current block">
-            <path d="M321.39,56.44c58-10.79,114.16-30.13,172-41.86,82.39-16.72,168.19-17.73,250.45-.39C823.78,31,906.67,72,985.66,92.83c70.05,18.48,146.53,26.09,214.34,3V120H0V95.8C59.71,118.08,130.83,126.38,201.33,119.53,243.68,115.42,284.66,101.8,321.39,56.44Z"></path>
-          </svg>
         </div>
       </div>
 
       {/* Featured Routes Section */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 -mt-10 z-20 relative">
-        <div className="flex justify-between items-end mb-10">
+      <div id="routes" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+        <div className="flex justify-between items-end mb-8 border-b border-slate-800 pb-4">
           <div>
-            <h2 className="text-3xl font-bold text-slate-900 tracking-tight">Popular Routes</h2>
-            <p className="text-slate-500 mt-2">The most contested lines in the Flatirons.</p>
+            <h2 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
+              <Mountain className="text-emerald-400" size={24} /> Popular Routes
+            </h2>
+            <p className="text-slate-400 text-sm mt-1">Verified routes and current record holders in the Flatirons.</p>
           </div>
-          <a href="#" className="hidden sm:flex items-center text-emerald-600 font-semibold hover:text-emerald-700 transition-colors">
-            View all <ChevronRight size={20} className="ml-1" />
-          </a>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
-          {routesData.map((route) => (
-            <div key={route.id} className="bg-white rounded-3xl overflow-hidden shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 border border-slate-100 group cursor-pointer flex flex-col">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          {filteredRoutes.map((route) => (
+            <a 
+              key={route.id} 
+              href={`/routes/${route.id}`}
+              className="bg-slate-900/60 rounded-2xl overflow-hidden border border-slate-800/80 hover:border-emerald-500/40 hover:bg-slate-900 transition-all duration-300 group flex flex-col"
+            >
               {/* Card Image */}
-              <div className="relative h-48 overflow-hidden">
+              <div className="relative h-48 overflow-hidden bg-slate-800">
                 <img 
                   src={route.image} 
                   alt={route.name} 
                   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                 />
-                <div className="absolute top-4 left-4 bg-white/90 backdrop-blur-sm px-3 py-1 rounded-full text-xs font-bold text-slate-700 shadow-sm">
+                <div className="absolute top-3 left-3 bg-slate-950/80 backdrop-blur-md px-2.5 py-1 rounded-lg text-xs font-semibold text-emerald-400 border border-slate-800">
                   {route.difficulty}
                 </div>
               </div>
 
               {/* Card Content */}
-              <div className="p-6 flex-1 flex flex-col">
-                <h3 className="text-xl font-bold text-slate-900 mb-4 group-hover:text-emerald-600 transition-colors line-clamp-1">
+              <div className="p-5 flex-1 flex flex-col">
+                <h3 className="text-lg font-bold text-white mb-2 group-hover:text-emerald-400 transition-colors line-clamp-1">
                   {route.name}
                 </h3>
+                <p className="text-xs text-slate-400 mb-4 line-clamp-2 leading-relaxed">
+                  {route.description}
+                </p>
                 
-                <div className="grid grid-cols-2 gap-4 mb-6">
-                  <div className="flex items-center text-slate-600">
-                    <MapPin size={16} className="text-emerald-500 mr-2 opacity-70" />
-                    <span className="text-sm font-medium">{route.distance}</span>
+                <div className="grid grid-cols-2 gap-2 mb-6 text-xs text-slate-400">
+                  <div className="flex items-center">
+                    <MapPin size={14} className="text-emerald-400 mr-1.5" />
+                    <span>{route.distance}</span>
                   </div>
-                  <div className="flex items-center text-slate-600">
-                    <TrendingUp size={16} className="text-emerald-500 mr-2 opacity-70" />
-                    <span className="text-sm font-medium">{route.elevation}</span>
+                  <div className="flex items-center">
+                    <TrendingUp size={14} className="text-emerald-400 mr-1.5" />
+                    <span>{route.elevation}</span>
                   </div>
                 </div>
 
-                <div className="mt-auto pt-4 border-t border-slate-100">
+                <div className="mt-auto pt-4 border-t border-slate-800/60">
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Current FKT</span>
-                    <div className="flex items-center text-emerald-600 font-bold bg-emerald-50 px-2 py-1 rounded-md">
-                      <Clock size={14} className="mr-1.5" />
-                      {route.fktTime}
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Route Record</span>
+                    <div className="flex items-center text-emerald-400 font-bold bg-emerald-500/10 px-2 py-0.5 rounded text-xs">
+                      <Clock size={12} className="mr-1" />
+                      {route.fastestTime}
                     </div>
                   </div>
-                  <div className="flex items-center text-slate-800 font-medium">
-                    <Trophy size={16} className="text-amber-500 mr-2" fill="currentColor" />
-                    {route.fktHolder}
+                  <div className="flex items-center text-slate-200 text-sm font-medium">
+                    <Trophy size={14} className="text-amber-400 mr-1.5" />
+                    {route.recordHolder}
                   </div>
                 </div>
               </div>
-            </div>
+            </a>
           ))}
-        </div>
-        
-        {/* Mobile View All Button */}
-        <div className="mt-10 sm:hidden flex justify-center">
-          <a href="#" className="flex items-center justify-center w-full bg-white border-2 border-slate-200 text-slate-700 font-semibold py-3 rounded-xl hover:border-emerald-500 hover:text-emerald-600 transition-colors">
-            View all routes <ChevronRight size={20} className="ml-1" />
-          </a>
         </div>
       </div>
 
       {/* Footer */}
-      <footer className="bg-slate-900 text-slate-400 py-12 mt-12 border-t border-slate-800">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row justify-between items-center">
-          <div className="flex items-center gap-2 mb-4 md:mb-0 opacity-80 hover:opacity-100 transition-opacity cursor-pointer text-white">
-            <Mountain size={24} />
-            <span className="font-bold text-xl tracking-tight">
-              Fastest <span className="text-emerald-500">Fatties</span>
-            </span>
+      <footer className="bg-slate-950 text-slate-500 py-12 border-t border-slate-800 mt-12">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row justify-between items-center gap-4">
+          <div className="flex items-center gap-2 text-white">
+            <Mountain size={20} className="text-emerald-400" />
+            <span className="font-bold tracking-tight">Fastest <span className="text-emerald-400">Fatties</span></span>
           </div>
-          
-          <div className="flex space-x-6 text-sm">
-            <a href="#" className="hover:text-white transition-colors">About</a>
-            <a href="#" className="hover:text-white transition-colors">Guidelines</a>
-            <a href="#" className="hover:text-white transition-colors">Privacy</a>
-            <a href="#" className="hover:text-white transition-colors">Terms</a>
-          </div>
-        </div>
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-6 text-center text-xs opacity-50">
-          <p>&copy; {new Date().getFullYear()} Fastest Fatties. Not affiliated with the official FKT website. Climb at your own risk.</p>
+          <p className="text-xs text-slate-600">&copy; {new Date().getFullYear()} Fastest Fatties. Non-commercial community mountain logs.</p>
         </div>
       </footer>
     </div>
