@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { MapContainer, TileLayer, Polyline, useMap } from 'react-leaflet';
-import 'leaflet/dist/leaflet.css';
-import gpxParser from 'gpxparser';
+import GpxParser from 'gpxparser';
 
 interface MapInnerProps {
   gpxUrl: string;
@@ -13,7 +12,7 @@ function AutoFitBounds({ positions }: { positions: [number, number][] }) {
   const map = useMap();
   useEffect(() => {
     if (positions.length > 0) {
-      map.fitBounds(positions);
+      map.fitBounds(positions, { padding: [30, 30] });
     }
   }, [map, positions]);
   return null;
@@ -26,16 +25,23 @@ export default function MapInner({ gpxUrl }: MapInnerProps) {
     async function fetchGPX() {
       try {
         const response = await fetch(gpxUrl);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch GPX: ${response.statusText}`);
+        }
         const gpxText = await response.text();
-        const gpx = new gpxParser();
+        
+        // Parse GPX text
+        const gpx = new GpxParser();
         gpx.parse(gpxText);
 
-        if (gpx.tracks && gpx.tracks[0]) {
-          const trackPoints = gpx.tracks[0].points.map((pt) => [pt.lat, pt.lon] as [number, number]);
+        if (gpx.tracks && gpx.tracks.length > 0 && gpx.tracks[0].points) {
+          const trackPoints = gpx.tracks[0].points.map(
+            (pt) => [pt.lat, pt.lon] as [number, number]
+          );
           setPositions(trackPoints);
         }
       } catch (err) {
-        console.error("Error fetching or parsing GPX file:", err);
+        console.error("GPX map render error:", err);
       }
     }
 
@@ -44,10 +50,11 @@ export default function MapInner({ gpxUrl }: MapInnerProps) {
     }
   }, [gpxUrl]);
 
-  const defaultCenter: [number, number] = positions[0] || [40.0001, -105.2828];
+  // Fallback map center: First Flatiron, Boulder CO
+  const defaultCenter: [number, number] = [39.9888, -105.2931];
 
   return (
-    <div className="h-96 w-full rounded-2xl overflow-hidden border border-slate-800 shadow-xl relative z-0">
+    <div className="h-[400px] w-full rounded-2xl overflow-hidden border border-slate-800 shadow-xl relative z-0 bg-slate-900">
       <MapContainer
         center={defaultCenter}
         zoom={14}

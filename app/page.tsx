@@ -18,15 +18,15 @@ import {
 
 const routesData = [
   {
-    id: '1st-flatiron-direct',
-    name: '1st Flatiron Direct',
-    distance: '1.2 mi',
-    elevation: '1,050 ft',
-    recordHolder: 'Alex Honnold',
-    fastestTime: '32:14',
+    id: 'f1111111-1111-1111-1111-111111111111', // Updated valid UUID
+    name: 'First Flatiron - Direct East Face (DEF)',
+    distance: '2.4 mi',
+    elevation: '1,400 ft',
+    recordHolder: 'Kyle Richardson',
+    fastestTime: '30:19',
     image: 'https://images.unsplash.com/photo-1598974609653-53d719597274?auto=format&fit=crop&q=80&w=800',
     difficulty: 'Hard',
-    description: 'The iconic East Face scramble up the First Flatiron, starting from Chautauqua trailhead.'
+    description: 'The iconic Direct East Face scramble from Chautauqua trailhead to the summit block of the First Flatiron.'
   },
   {
     id: '2nd-flatiron-freeway',
