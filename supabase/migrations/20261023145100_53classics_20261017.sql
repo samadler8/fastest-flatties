@@ -1,11 +1,11 @@
--- 1. Insert Athletes (Mike Palmer & Ari)
+-- 1. Insert Athletes
 INSERT INTO athletes (id, name, instagram)
 VALUES 
   ('a2222222-2222-2222-2222-222222222222', 'Mike Palmer', NULL),
   ('a3333333-3333-3333-3333-333333333333', 'Ari', NULL)
-ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name;
+ON CONFLICT (id) DO NOTHING;
 
--- 2. Insert Route Entry for 53 Classics Linkup
+-- 2. Insert 53 Classics Route
 INSERT INTO routes (
   id, 
   name, 
@@ -43,12 +43,12 @@ ON CONFLICT (id) DO UPDATE SET
   rules = EXCLUDED.rules,
   photos = EXCLUDED.photos;
 
--- 3. Insert Joint Efforts for Mike Palmer & Ari (27:52:34)
+-- 3. Insert Joint FKT Efforts for Mike Palmer & Ari
 INSERT INTO efforts (route_id, athlete_id, time_seconds, formatted_time, activity_date, gpx_url, verified)
 VALUES 
   (
     'f5353533-5353-5353-5353-535353535353',
-    'a2222222-2222-2222-2222-222222222222', -- Mike Palmer
+    'a2222222-2222-2222-2222-222222222222',
     100354,
     '27:52:34',
     '2026-10-17',
@@ -57,7 +57,7 @@ VALUES
   ),
   (
     'f5353533-5353-5353-5353-535353535353',
-    'a3333333-3333-3333-3333-333333333333', -- Ari
+    'a3333333-3333-3333-3333-333333333333',
     100354,
     '27:52:34',
     '2026-10-17',
