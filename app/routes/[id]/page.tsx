@@ -3,28 +3,47 @@ import GPXMap from "@/components/GPXMap";
 import { Mountain, MapPin, TrendingUp, Trophy, Clock, Download, ArrowLeft } from "lucide-react";
 import Link from "next/link";
 
-export default async function RoutePage({ params }: { params: { id: string } }) {
+// Force Next.js to fetch fresh data from Supabase on every request
+export const dynamic = 'force-dynamic';
+
+export default async function RoutePage({ 
+  params 
+}: { 
+  params: Promise<{ id: string }> 
+}) {
   const { id } = await params;
 
   // 1. Fetch Route Details
-  const { data: route } = await supabase
+  const { data: route, error: routeError } = await supabase
     .from("routes")
     .select("*")
     .eq("id", id)
     .single();
 
-  // 2. Fetch Verified Efforts for this Route (Sorted Fastest First)
-  const { data: efforts } = await supabase
+  if (routeError) {
+    console.error("Supabase Route Query Error:", routeError);
+  }
+
+  // 2. Fetch Verified Efforts for this Route
+  const { data: efforts, error: effortError } = await supabase
     .from("efforts")
     .select("*, athlete:athletes(*)")
     .eq("route_id", id)
     .eq("verified", true)
     .order("time_seconds", { ascending: true });
 
+  if (effortError) {
+    console.error("Supabase Efforts Query Error:", effortError);
+  }
+
   if (!route) {
     return (
-      <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center">
-        <p>Route not found.</p>
+      <div className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center gap-4">
+        <p className="text-xl font-bold text-slate-300">Route not found in database.</p>
+        <p className="text-sm text-slate-500 font-mono">Query ID: {id}</p>
+        <Link href="/" className="text-emerald-400 hover:underline text-sm">
+          Return to Homepage
+        </Link>
       </div>
     );
   }
