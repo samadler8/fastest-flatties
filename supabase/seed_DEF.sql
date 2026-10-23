@@ -11,7 +11,7 @@ VALUES (
   'The iconic Direct East Face scramble from Chautauqua trailhead to the summit block of the First Flatiron.',
   2.4,
   1400,
-  'https://gxoxxbzoykhvjgkbiuwx.supabase.co/storage/v1/object/public/gpx-files/DEF_+2019-10-15.gpx',
+  'https://gxoxxbzoykhvjgkbiuwx.supabase.co/storage/v1/object/public/gpx-files/DEF_%202019-10-15.gpx',
   'Starts at the Chautauqua Trailhead sign and ends upon touching the highest point of the First Flatiron summit block.',
   '• Human-powered only from trailhead to summit.
 • Free solo or roped scrambling permitted.
@@ -31,7 +31,7 @@ VALUES (
   1819,
   '30:19',
   '2019-10-15',
-  'https://gxoxxbzoykhvjgkbiuwx.supabase.co/storage/v1/object/public/gpx-files/DEF_+2019-10-15.gpx',
+  'https://gxoxxbzoykhvjgkbiuwx.supabase.co/storage/v1/object/public/gpx-files/DEF_%202019-10-15.gpx',
   TRUE
 )
 ON CONFLICT (id) DO NOTHING;

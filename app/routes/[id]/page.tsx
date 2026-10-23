@@ -117,7 +117,13 @@ export default async function RoutePage({
                         {idx === 0 ? <span className="text-amber-400 font-extrabold text-base">#1 👑</span> : `#${idx + 1}`}
                       </td>
                       <td className="px-6 py-4 font-semibold text-white">
-                        {effort.athlete?.name || "Unknown Athlete"}
+                        {effort.athlete?.id ? (
+                          <Link href={`/athletes/${effort.athlete.id}`} className="hover:text-emerald-400 transition-colors">
+                            {effort.athlete.name}
+                          </Link>
+                        ) : (
+                          effort.athlete?.name || "Unknown Athlete"
+                        )}
                       </td>
                       <td className="px-6 py-4 font-mono font-bold text-emerald-400">
                         <span className="inline-flex items-center gap-1">
