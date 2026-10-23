@@ -29,38 +29,16 @@ const routesData = [
     description: 'The iconic Direct East Face scramble from Chautauqua trailhead to the summit block of the First Flatiron.'
   },
   {
-    id: '2nd-flatiron-freeway',
-    name: '2nd Flatiron Freeway',
-    distance: '1.5 mi',
-    elevation: '1,120 ft',
-    recordHolder: 'Anton Krupicka',
-    fastestTime: '36:45',
-    image: 'https://images.unsplash.com/photo-1566810235336-07fb905a5a14?auto=format&fit=crop&q=80&w=800',
-    difficulty: 'Moderate',
-    description: 'Classic scramble featuring wide slab running and breathtaking views of Boulder.'
+    id: 'f5353533-5353-5353-5353-535353535353',
+    name: '53 Flatiron Classics Linkup',
+    distance: '28.6 mi',
+    elevation: '19,075 ft',
+    recordHolder: 'Mike Palmer & Ari',
+    fastestTime: '27:52:34',
+    image: 'https://images.unsplash.com/photo-1598974609653-53d719597274?auto=format&fit=crop&q=80&w=800',
+    difficulty: 'Extreme',
+    description: 'The ultimate Boulder scrambling linkup connecting 53 classic Flatiron rock faces in a single push.'
   },
-  {
-    id: '3rd-flatiron-standard',
-    name: '3rd Flatiron Standard',
-    distance: '1.4 mi',
-    elevation: '1,250 ft',
-    recordHolder: 'Kilian Jornet',
-    fastestTime: '29:50',
-    image: 'https://images.unsplash.com/photo-1588147514731-1520e54d3209?auto=format&fit=crop&q=80&w=800',
-    difficulty: 'Expert',
-    description: 'Steeper and longer slab climbing with a rappelling descent off the summit.'
-  },
-  {
-    id: 'green-mountain-gregory',
-    name: 'Green Mountain via Gregory',
-    distance: '3.2 mi',
-    elevation: '2,200 ft',
-    recordHolder: 'Joe Grant',
-    fastestTime: '42:10',
-    image: 'https://images.unsplash.com/photo-1627918451876-06ee79d63c52?auto=format&fit=crop&q=80&w=800',
-    difficulty: 'Strenuous',
-    description: 'Heavy vertical effort up Gregory Canyon to the Green Mountain summit block.'
-  }
 ];
 
 export default function Home() {
