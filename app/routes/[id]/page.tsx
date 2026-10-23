@@ -9,7 +9,8 @@ import {
   ArrowLeft, 
   ShieldCheck, 
   Flag, 
-  History 
+  History,
+  Tag
 } from "lucide-react";
 import Link from "next/link";
 
@@ -24,14 +25,18 @@ function formatTimeDiff(seconds: number) {
   return `-${s}s`;
 }
 
+type CategoryDefinition = {
+  group: string;
+  definitions: Array<{ name: string; description?: string }>;
+};
+
 type GroupedEffort = {
   id: string;
   time_seconds: number;
   formatted_time: string;
   activity_date: string;
   gpx_url?: string;
-  gender?: string;
-  support_type?: string;
+  category_tags: string[];
   athletes: Array<{ id: string; name: string }>;
   timeDiff?: string;
 };
@@ -54,7 +59,7 @@ export default async function RoutePage({
     console.error("Supabase Route Query Error:", routeError.message);
   }
 
-  // 2. Fetch all verified efforts sorted by activity_date and time
+  // 2. Fetch Verified Efforts
   const { data: rawEfforts, error: effortError } = await supabase
     .from("efforts")
     .select("*, athlete:athletes(*)")
@@ -79,12 +84,12 @@ export default async function RoutePage({
     );
   }
 
-  // 3. Group joint efforts (athletes sharing the exact same time & date)
+  // Group joint efforts (athletes sharing exact time & date)
   const groupedMap = new Map<string, GroupedEffort>();
 
   if (rawEfforts) {
     rawEfforts.forEach((e) => {
-      const groupKey = `${e.time_seconds}_${e.activity_date}`;
+      const groupKey = `${e.time_seconds}_${e.activity_date}_${(e.category_tags || []).join('-')}`;
       if (groupedMap.has(groupKey)) {
         const existing = groupedMap.get(groupKey)!;
         if (e.athlete && !existing.athletes.some(a => a.id === e.athlete.id)) {
@@ -97,8 +102,7 @@ export default async function RoutePage({
           formatted_time: e.formatted_time,
           activity_date: e.activity_date,
           gpx_url: e.gpx_url,
-          gender: e.gender || 'Male',
-          support_type: e.support_type || 'Unsupported',
+          category_tags: e.category_tags || [],
           athletes: e.athlete ? [{ id: e.athlete.id, name: e.athlete.name }] : []
         });
       }
@@ -106,11 +110,9 @@ export default async function RoutePage({
   }
 
   const groupedEfforts = Array.from(groupedMap.values());
-
-  // Calculate Leaderboard (Sorted by fastest time ASC)
   const leaderboard = [...groupedEfforts].sort((a, b) => a.time_seconds - b.time_seconds);
 
-  // Calculate FKT Record History Timeline
+  // FKT History Timeline calculation
   const recordHistory: GroupedEffort[] = [];
   let fastestTimeSoFar = Infinity;
 
@@ -118,22 +120,20 @@ export default async function RoutePage({
     if (effort.time_seconds < fastestTimeSoFar) {
       const diff = fastestTimeSoFar === Infinity ? "Initial Benchmark Record" : formatTimeDiff(fastestTimeSoFar - effort.time_seconds);
       fastestTimeSoFar = effort.time_seconds;
-      recordHistory.push({
-        ...effort,
-        timeDiff: diff
-      });
+      recordHistory.push({ ...effort, timeDiff: diff });
     }
   });
 
   recordHistory.reverse();
 
+  const categoryGroups: CategoryDefinition[] = route.category_definitions || [];
   const rulesList = route.rules 
     ? route.rules.split("\n").filter((rule: string) => rule.trim().length > 0)
     : [];
 
   return (
     <div className="min-h-screen bg-sandstone-950 text-sandstone-100 font-serif pb-20">
-      {/* Header Bar */}
+      {/* Navigation Header */}
       <div className="border-b-2 border-flatiron-red/40 bg-sandstone-900/90 backdrop-blur-md sticky top-0 z-40 shadow-lg">
         <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
           <Link href="/" className="inline-flex items-center font-mono text-xs uppercase tracking-widest text-sandstone-400 hover:text-flatiron-red transition-colors">
@@ -146,7 +146,7 @@ export default async function RoutePage({
       </div>
 
       <div className="max-w-6xl mx-auto px-4 py-8 space-y-12">
-        {/* Title & Banner */}
+        {/* Banner */}
         <div className="bg-sandstone-900 border-2 border-sandstone-800 p-8 shadow-2xl space-y-4">
           <span className="font-mono text-xs text-flatiron-ochre uppercase tracking-widest block">
             === BOULDER FLATIRON SPEED RECORD ROUTE ===
@@ -165,7 +165,7 @@ export default async function RoutePage({
           </div>
         </div>
 
-        {/* Map Section */}
+        {/* Route Map */}
         <div>
           <h2 className="text-2xl font-serif font-bold text-sandstone-100 mb-4 flex items-center gap-2">
             <MapPin size={22} className="text-flatiron-red" /> Route Map & Topo
@@ -179,16 +179,11 @@ export default async function RoutePage({
           )}
         </div>
 
-        {/* Current Speed Leaderboard */}
+        {/* Current Leaderboard */}
         <div>
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-2">
-            <h2 className="text-2xl font-serif font-bold text-sandstone-100 flex items-center gap-2">
-              <Trophy size={22} className="text-flatiron-gold" /> Current Leaderboard
-            </h2>
-            <span className="font-mono text-xs text-sandstone-400 uppercase">
-              Ranked by fastest verified completion
-            </span>
-          </div>
+          <h2 className="text-2xl font-serif font-bold text-sandstone-100 mb-4 flex items-center gap-2">
+            <Trophy size={22} className="text-flatiron-gold" /> Current Leaderboard
+          </h2>
 
           <div className="overflow-x-auto bg-sandstone-900 border-2 border-sandstone-800 shadow-2xl">
             <table className="w-full text-left font-mono text-xs text-sandstone-200">
@@ -196,7 +191,7 @@ export default async function RoutePage({
                 <tr>
                   <th className="px-6 py-4">RANK</th>
                   <th className="px-6 py-4">ATHLETE(S)</th>
-                  <th className="px-6 py-4">CATEGORY</th>
+                  <th className="px-6 py-4">CATEGORIES</th>
                   <th className="px-6 py-4">TIME</th>
                   <th className="px-6 py-4">DATE</th>
                   <th className="px-6 py-4 text-right">GPX</th>
@@ -210,27 +205,22 @@ export default async function RoutePage({
                         {idx === 0 ? "01 [FKT 👑]" : `#0${idx + 1}`}
                       </td>
                       <td className="px-6 py-4 font-serif text-base font-bold text-sandstone-100">
-                        {effort.athletes.length > 0 ? (
-                          effort.athletes.map((a, aIdx) => (
-                            <span key={a.id}>
-                              <Link href={`/athletes/${a.id}`} className="hover:text-flatiron-red transition-colors">
-                                {a.name}
-                              </Link>
-                              {aIdx < effort.athletes.length - 1 && " & "}
-                            </span>
-                          ))
-                        ) : (
-                          "Unknown Athlete"
-                        )}
+                        {effort.athletes.map((a, aIdx) => (
+                          <span key={a.id}>
+                            <Link href={`/athletes/${a.id}`} className="hover:text-flatiron-red transition-colors">
+                              {a.name}
+                            </Link>
+                            {aIdx < effort.athletes.length - 1 && " & "}
+                          </span>
+                        ))}
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex gap-1.5 flex-wrap">
-                          <span className="bg-sandstone-950 border border-sandstone-700 text-sandstone-300 px-2 py-0.5 rounded text-[10px] uppercase font-bold">
-                            {effort.gender}
-                          </span>
-                          <span className="bg-flatiron-rust/30 border border-flatiron-red/50 text-flatiron-red px-2 py-0.5 rounded text-[10px] uppercase font-bold">
-                            {effort.support_type}
-                          </span>
+                          {effort.category_tags.map((tag) => (
+                            <span key={tag} className="bg-sandstone-950 border border-sandstone-700 text-sandstone-200 px-2 py-0.5 rounded text-[10px] uppercase font-bold">
+                              {tag}
+                            </span>
+                          ))}
                         </div>
                       </td>
                       <td className="px-6 py-4 font-bold text-flatiron-red text-sm">
@@ -260,73 +250,38 @@ export default async function RoutePage({
           </div>
         </div>
 
-        {/* FKT Record History Timeline */}
-        <div>
-          <h2 className="text-2xl font-serif font-bold text-sandstone-100 mb-4 flex items-center gap-2">
-            <History size={22} className="text-flatiron-ochre" /> FKT Record History Timeline
-          </h2>
-
-          <div className="bg-sandstone-900 border-2 border-sandstone-800 p-6 shadow-2xl space-y-6">
-            {recordHistory.length > 0 ? (
-              <div className="relative border-l-2 border-sandstone-800 ml-4 space-y-8 pl-6">
-                {recordHistory.map((rec) => (
-                  <div key={rec.id} className="relative group">
-                    <div className="absolute -left-[31px] top-1.5 w-3 h-3 bg-flatiron-red border-2 border-sandstone-950 rounded-full group-hover:scale-125 transition-transform" />
-                    
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-sandstone-950 border border-sandstone-800 p-4">
-                      <div>
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="font-serif font-bold text-lg text-sandstone-100">
-                            {rec.athletes.map((a, aIdx) => (
-                              <span key={a.id}>
-                                {a.name}
-                                {aIdx < rec.athletes.length - 1 && " & "}
-                              </span>
-                            ))}
-                          </span>
-                          <span className="font-mono text-xs text-flatiron-gold bg-sandstone-900 px-2 py-0.5 border border-sandstone-800">
-                            {rec.timeDiff}
-                          </span>
-                        </div>
-                        <div className="font-mono text-xs text-sandstone-400 flex items-center gap-3">
-                          <span>DATE: {rec.activity_date}</span>
-                          <span>|</span>
-                          <span className="uppercase text-sandstone-300">{rec.gender} / {rec.support_type}</span>
-                        </div>
-                      </div>
-
-                      <div className="font-mono text-xl font-bold text-flatiron-red">
-                        {rec.formatted_time}
-                      </div>
-                    </div>
+        {/* Dynamic Category Definitions & Route Rules */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {categoryGroups.length > 0 && (
+            <div className="bg-sandstone-900 border-2 border-sandstone-800 p-6 shadow-xl lg:col-span-2 space-y-6">
+              <h3 className="text-xl font-serif font-bold text-sandstone-100 flex items-center gap-2">
+                <Tag size={20} className="text-flatiron-ochre" /> Route Category Definitions
+              </h3>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {categoryGroups.map((group) => (
+                  <div key={group.group} className="bg-sandstone-950 border border-sandstone-800 p-4 space-y-3">
+                    <span className="font-mono text-xs font-bold text-flatiron-ochre uppercase border-b border-sandstone-800 block pb-1">
+                      {group.group}
+                    </span>
+                    <ul className="space-y-2">
+                      {group.definitions.map((def) => (
+                        <li key={def.name} className="text-xs font-serif">
+                          <strong className="text-sandstone-100 uppercase font-mono mr-1.5">{def.name}:</strong>
+                          <span className="text-sandstone-300">{def.description || "Standard route category."}</span>
+                        </li>
+                      ))}
+                    </ul>
                   </div>
                 ))}
               </div>
-            ) : (
-              <p className="font-mono text-xs text-sandstone-400 text-center py-4">
-                [ NO RECORD PROGRESSION HISTORY RECORDED ]
-              </p>
-            )}
-          </div>
-        </div>
-
-        {/* Start/Finish & Rules */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {route.start_finish && (
-            <div className="bg-sandstone-900 border-2 border-sandstone-800 p-6 shadow-xl">
-              <h3 className="text-lg font-serif font-bold text-sandstone-100 mb-3 flex items-center gap-2">
-                <Flag size={18} className="text-flatiron-red" /> Start & Finish Location
-              </h3>
-              <p className="text-sandstone-200 text-sm leading-relaxed font-serif">
-                {route.start_finish}
-              </p>
             </div>
           )}
 
           {rulesList.length > 0 && (
-            <div className="bg-sandstone-900 border-2 border-sandstone-800 p-6 shadow-xl">
+            <div className="bg-sandstone-900 border-2 border-sandstone-800 p-6 shadow-xl lg:col-span-2">
               <h3 className="text-lg font-serif font-bold text-sandstone-100 mb-3 flex items-center gap-2">
-                <ShieldCheck size={18} className="text-flatiron-red" /> Route Rules & Standards
+                <ShieldCheck size={18} className="text-flatiron-red" /> General Standards & Rules
               </h3>
               <ul className="space-y-2 text-sm text-sandstone-200 font-serif">
                 {rulesList.map((rule: string, i: number) => (
