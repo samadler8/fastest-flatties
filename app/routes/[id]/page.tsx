@@ -1,6 +1,17 @@
 import { supabase } from "@/lib/supabase";
 import GPXMap from "@/components/GPXMap";
-import { Mountain, MapPin, TrendingUp, Trophy, Clock, Download, ArrowLeft } from "lucide-react";
+import { 
+  Mountain, 
+  MapPin, 
+  TrendingUp, 
+  Trophy, 
+  Clock, 
+  Download, 
+  ArrowLeft, 
+  ShieldCheck, 
+  Flag, 
+  Camera 
+} from "lucide-react";
 import Link from "next/link";
 
 // Force Next.js to fetch fresh data from Supabase on every request
@@ -13,15 +24,15 @@ export default async function RoutePage({
 }) {
   const { id } = await params;
 
-  // 1. Fetch Route Details
+  // 1. Fetch Route Details safely with .maybeSingle() to prevent unhandled thrown errors
   const { data: route, error: routeError } = await supabase
     .from("routes")
     .select("*")
     .eq("id", id)
-    .single();
+    .maybeSingle();
 
   if (routeError) {
-    console.error("Supabase Route Query Error:", routeError);
+    console.error("Supabase Route Query Error:", routeError.message, routeError.details, routeError.code);
   }
 
   // 2. Fetch Verified Efforts for this Route
@@ -33,7 +44,7 @@ export default async function RoutePage({
     .order("time_seconds", { ascending: true });
 
   if (effortError) {
-    console.error("Supabase Efforts Query Error:", effortError);
+    console.error("Supabase Efforts Query Error:", effortError.message, effortError.details, effortError.code);
   }
 
   if (!route) {
@@ -48,10 +59,15 @@ export default async function RoutePage({
     );
   }
 
+  // Format rules bullet points
+  const rulesList = route.rules 
+    ? route.rules.split("\n").filter((rule: string) => rule.trim().length > 0)
+    : [];
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans pb-16">
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans pb-20">
       {/* Header Bar */}
-      <div className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-md sticky top-0 z-40">
+      <div className="border-b border-slate-800 bg-slate-900/80 backdrop-blur-md sticky top-0 z-40">
         <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
           <Link href="/" className="inline-flex items-center text-sm font-medium text-slate-400 hover:text-emerald-400 transition-colors">
             <ArrowLeft size={16} className="mr-1.5" /> Back to Routes
@@ -62,13 +78,13 @@ export default async function RoutePage({
         </div>
       </div>
 
-      <div className="max-w-6xl mx-auto px-4 py-8">
+      <div className="max-w-6xl mx-auto px-4 py-8 space-y-12">
         {/* Title & Stats Header */}
-        <div className="mb-8">
+        <div>
           <h1 className="text-3xl sm:text-5xl font-black text-white tracking-tight mb-4">{route.name}</h1>
           <p className="text-slate-400 max-w-3xl text-base leading-relaxed mb-6">{route.description}</p>
           
-          <div className="flex flex-wrap gap-6 text-sm font-medium text-slate-300 bg-slate-900 border border-slate-800 p-4 rounded-xl inline-flex">
+          <div className="flex flex-wrap gap-6 text-sm font-medium text-slate-300 bg-slate-900 border border-slate-800 p-4 rounded-2xl inline-flex shadow-lg">
             <div className="flex items-center gap-2">
               <MapPin size={18} className="text-emerald-400" />
               <span>{route.distance_miles} miles</span>
@@ -81,12 +97,14 @@ export default async function RoutePage({
         </div>
 
         {/* Map Section */}
-        <div className="mb-12">
-          <h2 className="text-xl font-bold text-white mb-4">Route Track</h2>
+        <div>
+          <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+            <MapPin size={20} className="text-emerald-400" /> Route Track & Map
+          </h2>
           {route.gpx_url ? (
             <GPXMap gpxUrl={route.gpx_url} />
           ) : (
-            <div className="h-64 bg-slate-900 rounded-xl border border-slate-800 flex items-center justify-center text-slate-500">
+            <div className="h-64 bg-slate-900 rounded-2xl border border-slate-800 flex items-center justify-center text-slate-500">
               No GPX track uploaded for this route yet.
             </div>
           )}
@@ -151,6 +169,59 @@ export default async function RoutePage({
             </table>
           </div>
         </div>
+
+        {/* Route Documentation & Rules */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {/* Start & Finish Line */}
+          {route.start_finish && (
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-white mb-3 flex items-center gap-2">
+                  <Flag size={20} className="text-emerald-400" /> Start & Finish Line
+                </h3>
+                <p className="text-slate-300 text-sm leading-relaxed">
+                  {route.start_finish}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Rules & Standards */}
+          {rulesList.length > 0 && (
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
+              <h3 className="text-lg font-bold text-white mb-3 flex items-center gap-2">
+                <ShieldCheck size={20} className="text-emerald-400" /> Route Rules & Standards
+              </h3>
+              <ul className="space-y-2 text-sm text-slate-300">
+                {rulesList.map((rule: string, i: number) => (
+                  <li key={i} className="leading-relaxed">
+                    {rule}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+
+        {/* Route Photo Gallery */}
+        {route.photos && route.photos.length > 0 && (
+          <div>
+            <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+              <Camera size={20} className="text-emerald-400" /> Route Photos & Topo
+            </h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {route.photos.map((photoUrl: string, idx: number) => (
+                <div key={idx} className="h-72 rounded-2xl overflow-hidden border border-slate-800 bg-slate-900 group">
+                  <img 
+                    src={photoUrl} 
+                    alt={`${route.name} photo ${idx + 1}`} 
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
