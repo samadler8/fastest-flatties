@@ -67,7 +67,12 @@ export default function MapInner({ gpxUrl }: MapInnerProps) {
         />
         {positions.length > 0 && (
           <>
-            <Polyline positions={positions} color="#10b981" weight={4} opacity={0.9} />
+            <Polyline 
+              positions={positions} 
+              color="#c04a29" 
+              weight={4} 
+              opacity={0.95} 
+            />
             <AutoFitBounds positions={positions} />
           </>
         )}

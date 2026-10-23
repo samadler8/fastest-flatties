@@ -4,6 +4,30 @@
 @tailwind components;
 @tailwind utilities;
 
-html {
-  scroll-behavior: smooth;
+@layer base {
+  body {
+    @apply bg-sandstone-950 text-sandstone-100 font-serif antialiased;
+    background-color: #15100d;
+    background-image: radial-gradient(#33261e 0.75px, transparent 0.75px);
+    background-size: 24px 24px;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-serif font-bold tracking-normal text-sandstone-100;
+  }
+}
+
+/* Custom retro scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #15100d;
+}
+::-webkit-scrollbar-thumb {
+  background: #33261e;
+  border: 1px solid #4a372c;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #c04a29;
 }
