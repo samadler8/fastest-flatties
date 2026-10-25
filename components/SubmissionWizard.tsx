@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Activity, Search, Map, CheckCircle, AlertTriangle, FastForward } from "lucide-react";
+import { Activity, Search, CheckCircle, FastForward } from "lucide-react";
+import Link from "next/link";
 import { processStravaActivity } from "@/app/actions/strava";
 
 // Ensure RouteInfo includes startLat/startLng so the backend can match them
@@ -24,7 +25,7 @@ export default function SubmissionWizard({
   const [selectedAthleteId, setSelectedAthleteId] = useState<string>("");
   const [athleteNameFallback, setAthleteNameFallback] = useState<string>("");
   const [confirmedTime, setConfirmedTime] = useState<number>(0);
-  const [processedGpx, setProcessedGpx] = useState<string>("");
+  const [archivedActivity, setArchivedActivity] = useState<{ id: string; athlete: string; title: string; points: number } | null>(null);
   const [isFullyAutomated, setIsFullyAutomated] = useState(false);
 
   const handleProcessActivity = async () => {
@@ -37,9 +38,19 @@ export default function SubmissionWizard({
       );
       if (!result.success) throw new Error(result.error);
       
-      setProcessedGpx(result.gpxData!);
+      setArchivedActivity({
+        id: result.activityId,
+        athlete: result.athleteName,
+        title: result.activityTitle,
+        points: result.pointCount,
+      });
       setConfirmedTime(result.elapsedSeconds!);
       
+      setFinalRouteId("");
+      setSelectedAthleteId("");
+      setAthleteNameFallback("");
+      setIsFullyAutomated(false);
+
       // Auto-Match Route
       if (result.detectedRouteId) {
         setFinalRouteId(result.detectedRouteId);
@@ -70,11 +81,10 @@ export default function SubmissionWizard({
     }
   };
 
-  const handleSubmit = async () => {
-    setIsProcessing(true);
-    // Execute final Supabase submission here using finalRouteId, selectedAthleteId, confirmedTime
-    alert("Fully automated submission successful!");
-    setIsProcessing(false);
+  const handleReset = () => {
+    setStep(1);
+    setStravaUrl("");
+    setArchivedActivity(null);
   };
 
   return (
@@ -84,7 +94,7 @@ export default function SubmissionWizard({
       {step === 1 && (
         <div className="space-y-6">
           <h2 className="text-2xl font-bold text-flatiron-red flex items-center gap-2">
-            <Activity /> Auto-Import Activity
+            <Activity /> Archive Strava Activity
           </h2>
           
           <input 
@@ -100,7 +110,7 @@ export default function SubmissionWizard({
             disabled={isProcessing || !stravaUrl}
             className="w-full py-4 bg-flatiron-red text-white font-bold tracking-widest uppercase disabled:opacity-50 hover:bg-red-800 transition-colors flex justify-center items-center gap-2"
           >
-            {isProcessing ? <Search className="animate-spin" /> : "Extract & Match Data"}
+            {isProcessing ? <Search className="animate-spin" /> : "Import & Archive"}
           </button>
         </div>
       )}
@@ -110,16 +120,27 @@ export default function SubmissionWizard({
         <div className="space-y-6">
           <h2 className="text-2xl font-bold flex items-center gap-2">
             {isFullyAutomated ? (
-              <><FastForward className="text-green-500" /> Perfect Match Found</>
+              <><FastForward className="text-green-500" /> Activity Archived & Matched</>
             ) : (
-              <><CheckCircle className="text-flatiron-ochre" /> Review Extracted Data</>
+              <><CheckCircle className="text-flatiron-ochre" /> Activity Archived</>
             )}
           </h2>
+
+          {archivedActivity && (
+            <div className="border border-sandstone-700 bg-sandstone-950 p-4 text-sm space-y-1">
+              <p><strong>Athlete:</strong> {archivedActivity.athlete}</p>
+              <p><strong>Activity:</strong> {archivedActivity.title}</p>
+              <p><strong>Strava ID:</strong> {archivedActivity.id}</p>
+              <p><strong>Retained GPS points:</strong> {archivedActivity.points}</p>
+              <p className="text-sandstone-400">Sparse GPX and metadata saved to the archive. They will be exported into the repository by the scheduled workflow.</p>
+              <p className="text-sandstone-400">This does not submit or verify an effort on the leaderboard.</p>
+            </div>
+          )}
 
           <div className="bg-sandstone-950 border border-sandstone-700 p-6 grid gap-6">
             {/* Route Section */}
             <div>
-              <label className="font-mono text-xs text-sandstone-400 uppercase block mb-2">Route</label>
+              <label className="font-mono text-xs text-sandstone-400 uppercase block mb-2">Suggested route (not saved yet)</label>
               <select 
                 value={finalRouteId}
                 onChange={(e) => setFinalRouteId(e.target.value)}
@@ -134,7 +155,7 @@ export default function SubmissionWizard({
 
             {/* Athlete Section */}
             <div>
-              <label className="font-mono text-xs text-sandstone-400 uppercase block mb-2">Athlete Profile</label>
+              <label className="font-mono text-xs text-sandstone-400 uppercase block mb-2">Suggested athlete profile (not saved yet)</label>
               <select 
                 value={selectedAthleteId}
                 onChange={(e) => setSelectedAthleteId(e.target.value)}
@@ -161,14 +182,13 @@ export default function SubmissionWizard({
           </div>
 
           <div className="flex gap-4">
-            <button onClick={() => setStep(1)} className="px-6 py-3 border border-sandstone-700 text-sandstone-400 hover:text-white uppercase font-mono text-sm tracking-wider">Cancel</button>
-            <button 
-              onClick={handleSubmit}
-              disabled={!finalRouteId || !selectedAthleteId || isProcessing}
-              className="flex-1 py-3 bg-green-700 text-white font-bold tracking-widest uppercase disabled:opacity-50 hover:bg-green-600 transition-colors"
+            <button onClick={handleReset} className="px-6 py-3 border border-sandstone-700 text-sandstone-400 hover:text-white uppercase font-mono text-sm tracking-wider">Archive another</button>
+            <Link
+              href="/submit_manual"
+              className="flex-1 text-center py-3 bg-green-700 text-white font-bold tracking-widest uppercase hover:bg-green-600 transition-colors"
             >
-              Confirm Submission
-            </button>
+              Submit effort manually
+            </Link>
           </div>
         </div>
       )}

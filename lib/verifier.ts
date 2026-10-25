@@ -21,7 +21,7 @@ export function verifyAttempt(
   }
 
   // Rule 1: Spatial Path Integrity (>= 95% inside buffer)
-  if (candidate.bufferMatchRatio < 0.95) {[cite: 1]
+  if (candidate.bufferMatchRatio < 0.95) {
     return {
       verified: false,
       reason: `Path integrity failed: Only ${(candidate.bufferMatchRatio * 100).toFixed(1)}% of coordinates aligned with route buffer (Required >= 95%).`,
@@ -30,10 +30,10 @@ export function verifyAttempt(
   }
 
   // Rule 2: Elevation Gain Cap
-  if (routeConfig.maxElevationGainMeters !== undefined && candidate.elevationGainMeters > routeConfig.maxElevationGainMeters) {[cite: 1]
+  if (routeConfig.maxElevationGainMeters !== undefined && candidate.elevationGainMeters > routeConfig.maxElevationGainMeters) {
     return {
       verified: false,
-      reason: `Elevation gain limit exceeded: ${candidate.elevationGainMeters}m recorded (Max allowed: ${routeConfig.maxElevationGainMeters}m).`,[cite: 1]
+      reason: `Elevation gain limit exceeded: ${candidate.elevationGainMeters}m recorded (Max allowed: ${routeConfig.maxElevationGainMeters}m).`,
       candidate,
     };
   }

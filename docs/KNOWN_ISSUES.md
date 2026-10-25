@@ -1,0 +1,11 @@
+# Existing issues outside the Strava archive refactor
+
+The Strava archive changes are intentionally narrow; this repository still needs additional work before treating every feature as production-ready.
+
+- **COROS callback is broken:** `app/api/auth/coros/callback/route.ts` references `state`, `exchangeCorosCode`, `supabase` and `scanAndSyncCorosActivities` without importing/declaring them. The flow also needs a security review before enabling it: OAuth state/session handling and protected token storage should be addressed together.
+- **Route auto-matching cannot currently run from the submission page:** `app/submit/page.tsx` fetches route `id,name`, but `processStravaActivity()` needs start/end coordinates. The input will still archive successfully; an unmatched route is expected until route coordinates are wired in.
+- **Manual vs archived effort:** the website's archival operation does *not* insert into the existing `efforts` table. Creating/validating leaderboard efforts should be a separate, authorized step. The prior wizard displayed a misleading success alert without writing to the database.
+- **Legacy tracked files:** GitHub currently shows `node_modules/` and `repomix-output.xml` in the repository. Although `.gitignore` now ignores these, files already tracked must be removed from the Git index, e.g. `git rm -r --cached node_modules repomix-output.xml`, before committing. Confirm these paths exist and review the change before applying it.
+- **Dependency/type check:** The uploaded Repomix export excludes `node_modules` and `package-lock.json`, so full `npm ci`, `next build` and project-wide TypeScript validation could not be performed on the provided snapshot. The new pure GPS parsing and thinning tests pass with Node 22.
+- **Archive publication permissions:** the live Strava importer is publicly callable. Before production use, add rate limiting / access control and require appropriate permission to publish athlete tracks in a public repo.
+- **Historical migration:** the former `20261025111900_efforts.sql` attempted to create a second `efforts` table that already existed. It has been changed into an additive, non-destructive migration. If that historical migration has already been applied in a project, compare the live schema before proceeding; applied migrations are not rerun automatically.

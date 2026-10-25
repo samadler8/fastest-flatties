@@ -1,94 +1,73 @@
 "use server";
 
 import { fetchActivityStreams } from "@/lib/strava/scraper";
+import { parseStravaActivityId, parseStravaMetadata } from "@/lib/strava/metadata";
+import { thinCoordinates, toMinimalGpx } from "@/lib/strava/sparse-gpx";
+import { saveStravaArchive } from "@/lib/strava/archive";
 
-// Helper to calculate distance between two coordinates in meters (Haversine)
-function getDistanceFromLatLonInM(lat1: number, lon1: number, lat2: number, lon2: number) {
-  const R = 6371e3; // Earth's radius in meters
-  const dLat = (lat2 - lat1) * (Math.PI / 180);
-  const dLon = (lon2 - lon1) * (Math.PI / 180);
-  const a = 
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * 
-    Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
+type RouteEndpoint = {
+  id: string;
+  startLat?: number;
+  startLng?: number;
+  endLat?: number;
+  endLng?: number;
+};
+
+function distanceMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const r = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) *
+    Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return r * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// Removed the stravaCookie parameter since we can pull it securely from env vars on the server
-export async function processStravaActivity(url: string, availableRoutes: any[]) {
+export async function processStravaActivity(url: string, availableRoutes: RouteEndpoint[]) {
   try {
-    const stravaCookie = process.env.STRAVA_COOKIE;
-    if (!stravaCookie) {
-      throw new Error("Strava authentication cookie is not configured on the server.");
-    }
+    const activityId = parseStravaActivityId(url);
+    const cookie = process.env.STRAVA_COOKIE;
+    if (!cookie) throw new Error("STRAVA_COOKIE is missing on the server.");
 
-    const match = url.match(/(?:activities\/|activity\/)(\d+)/);
-    if (!match || !match[1]) throw new Error("Invalid Strava activity URL");
-    const activityId = match[1];
-
-    // 1. Add the Cookie header to the HTML fetch
-    const pageRes = await fetch(`https://www.strava.com/activities/${activityId}`, {
-      headers: { 
-        "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
-        "Cookie": stravaCookie 
-      }
+    const page = await fetch(`https://www.strava.com/activities/${activityId}`, {
+      headers: { "Cookie": cookie, "User-Agent": "Mozilla/5.0" },
+      cache: "no-store",
     });
-    const html = await pageRes.text();
-
-    let athleteName = "Unknown Athlete";
-    let activityTitle = "Strava Activity";
-    
-    // Strava's og:title usually looks like "Activity Name - Athlete Name | Strava"
-    const titleMatch = html.match(/<meta property="og:title" content="([^"]+)"/);
-    if (titleMatch && titleMatch[1]) {
-      const parts = titleMatch[1].split(' - ');
-      if (parts.length >= 2) {
-        activityTitle = parts[0].trim();
-        athleteName = parts[1].split('|')[0].trim();
-      }
+    if (!page.ok) throw new Error(`Strava activity page returned HTTP ${page.status}.`);
+    const { athleteName, activityTitle } = parseStravaMetadata(await page.text());
+    const streams = await fetchActivityStreams(activityId, cookie);
+    const elapsedSeconds = streams.time.at(-1)! - streams.time[0];
+    if (!Number.isFinite(elapsedSeconds) || elapsedSeconds <= 0) {
+      throw new Error("Activity stream time data is invalid.");
     }
 
-    // 2. Fetch Streams using the merged function
-    const streams = await fetchActivityStreams(activityId, stravaCookie);
-    
-    const elapsedSeconds = streams.time[streams.time.length - 1] - streams.time[0];
-    const startCoord = streams.latlng[0];
-    const endCoord = streams.latlng[streams.latlng.length - 1];
+    // Match against the full-resolution track before any thinning.
+    const start = streams.latlng[0];
+    const end = streams.latlng[streams.latlng.length - 1];
+    const detectedRouteId = availableRoutes.find(route =>
+      [route.startLat, route.startLng, route.endLat, route.endLng].every(Number.isFinite) &&
+      distanceMeters(start[0], start[1], route.startLat!, route.startLng!) <= 200 &&
+      distanceMeters(end[0], end[1], route.endLat!, route.endLng!) <= 200
+    )?.id ?? null;
 
-    // 3. Auto-Match Route (Requires your available routes to have start/end lat/lng in DB)
-    let detectedRouteId = null;
-    const TOLERANCE_METERS = 200; // Allow 200m buffer for GPS drift at trailheads
-
-    for (const route of availableRoutes) {
-      if (!route.startLat) continue; 
-      
-      const startDist = getDistanceFromLatLonInM(startCoord[0], startCoord[1], route.startLat, route.startLng);
-      const endDist = getDistanceFromLatLonInM(endCoord[0], endCoord[1], route.endLat, route.endLng);
-      
-      if (startDist <= TOLERANCE_METERS && endDist <= TOLERANCE_METERS) {
-        detectedRouteId = route.id;
-        break;
-      }
-    }
-
-    // 4. Generate GPX
-    let gpxData = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1">\n<trk>\n<trkseg>\n`;
-    for (let i = 0; i < streams.latlng.length; i++) {
-      gpxData += `<trkpt lat="${streams.latlng[i][0]}" lon="${streams.latlng[i][1]}"><ele>${streams.altitude[i] || 0}</ele></trkpt>\n`;
-    }
-    gpxData += `</trkseg>\n</trk>\n</gpx>`;
-
-    return {
-      success: true,
+    const sparse = thinCoordinates(streams.latlng);
+    const sparseGpx = toMinimalGpx(sparse);
+    await saveStravaArchive({
       activityId,
       athleteName,
       activityTitle,
-      elapsedSeconds,
-      gpxData,
-      detectedRouteId
+      sourceUrl: `https://www.strava.com/activities/${activityId}`,
+      originalPointCount: streams.latlng.length,
+      retainedPointCount: sparse.length,
+      sparseGpx,
+    });
+
+    return {
+      success: true as const,
+      activityId, athleteName, activityTitle, elapsedSeconds,
+      pointCount: sparse.length,
+      detectedRouteId,
     };
-  } catch (error: any) {
-    return { success: false, error: error.message };
+  } catch (error: unknown) {
+    return { success: false as const, error: error instanceof Error ? error.message : "Unknown Strava import failure." };
   }
 }

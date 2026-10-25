@@ -37,4 +37,11 @@ Thumbs.db
 *.tsbuildinfo
 next-env.d.ts
 
-.xml
+# Generated repository snapshots
+repomix-output*.xml
+
+# Local cleanup handoff files (never commit these archives)
+fastest-flatties-strava-cleanup*.zip
+fastest-flatties-strava-cleanup*.patch
+fastest-flatties-typecheck-fix*.zip
+fastest-flatties-typecheck-fix*.patch

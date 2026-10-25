@@ -1,6 +1,5 @@
-import fetch from 'node-fetch';
-import polyline from '@mapbox/polyline';
-import simplify from 'simplify-js';
+import polyline from "@mapbox/polyline";
+import simplify from "simplify-js";
 
 export interface StravaSegmentEffort {
   activity_id: string;
@@ -8,90 +7,74 @@ export interface StravaSegmentEffort {
   elapsed_time_seconds: number;
 }
 
-export interface CompressedActivityStream {
-  activity_id: string;
-  encoded_polyline: string;
+export interface ActivityStreams {
+  latlng: [number, number][];
+  time: number[];
+  altitude: number[];
 }
+export type StravaStreams = ActivityStreams;
 
-/**
- * Compresses a raw Strava latlng stream into a simplified encoded polyline string.
- * @param latlngs Array of [lat, lng] coordinates from Strava
- * @param tolerance Simplification tolerance (0.0001 degrees is ~11 meters)
- */
+/** Retained for leaderboard and polyline tooling; not used for the sparse GPX archive. */
 export function compressRouteData(latlngs: [number, number][], tolerance = 0.0001): string {
-  // 1. Format for simplify-js { x: lat, y: lng }
-  const points = latlngs.map(coord => ({ x: coord[0], y: coord[1] }));
-  
-  // 2. Simplify the geometry (removes redundant points on straightaways)
+  const points = latlngs.map(([lat, lon]) => ({ x: lat, y: lon }));
   const simplified = simplify(points, tolerance, true);
-  
-  // 3. Format back to [lat, lng] arrays
-  const reducedCoordinates = simplified.map(p => [p.x, p.y] as [number, number]);
-  
-  // 4. Encode into a compressed string
-  return polyline.encode(reducedCoordinates);
+  return polyline.encode(simplified.map(p => [p.x, p.y]));
 }
 
-/**
- * Retrieves top efforts from public Strava segment leaderboards.
- * Note: Ensure you pass a valid Bearer token in your environment for the v3 API.
- */
 export async function fetchSegmentTopEfforts(
   segmentId: string,
-  limit: number = 10,
-  accessToken: string
+  limit = 10,
+  accessToken = process.env.STRAVA_ACCESS_TOKEN ?? "",
 ): Promise<StravaSegmentEffort[]> {
-  const url = `https://www.strava.com/api/v3/segments/${segmentId}/leaderboard?page=1&per_page=${limit}`;
-
+  if (!accessToken) throw new Error("STRAVA_ACCESS_TOKEN is required for segment leaderboard requests.");
+  const url = `https://www.strava.com/api/v3/segments/${encodeURIComponent(segmentId)}/leaderboard?page=1&per_page=${limit}`;
   const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'FastestFlattiesScraper/1.0',
-      'Accept': 'application/json',
-      'Authorization': `Bearer ${accessToken}`
-    },
+    headers: { "Accept": "application/json", "Authorization": `Bearer ${accessToken}` },
+    cache: "no-store",
   });
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch segment leaderboard ${segmentId}: ${response.statusText}`);
-  }
-
-  const data = (await response.json()) as any;
-  const entries = data.entries || [];
-
-  return entries.map((entry: any) => ({
+  if (!response.ok) throw new Error(`Segment leaderboard request failed (${response.status}).`);
+  const data: any = await response.json();
+  const entries: any[] = Array.isArray(data.entries) ? data.entries : [];
+  return entries.map((entry) => ({
     activity_id: String(entry.activity_id),
-    athlete_name: `${entry.athlete_firstname} ${entry.athlete_lastname}`.trim(),
-    elapsed_time_seconds: entry.elapsed_time,
+    athlete_name: `${entry.athlete_firstname ?? ""} ${entry.athlete_lastname ?? ""}`.trim(),
+    elapsed_time_seconds: Number(entry.elapsed_time),
   }));
 }
 
-/**
- * Fetches high-resolution stream arrays from Strava's web endpoint using a session cookie.
- * Returns the raw arrays for GPX generation, and optionally compresses the polyline for the DB.
- */
-export async function fetchActivityStreams(activityId: string, cookie: string): Promise<StravaStreams> {
-  const streamUrl = `https://www.strava.com/activities/${activityId}/streams?stream_types[]=latlng&stream_types[]=altitude&stream_types[]=time`;
-
-  const response = await fetch(streamUrl, {
+/** Internal Strava web endpoint: deliberately uses a server-side cookie, never exposes it to the client. */
+export async function fetchActivityStreams(
+  activityId: string,
+  cookie = process.env.STRAVA_COOKIE ?? "",
+): Promise<ActivityStreams> {
+  if (!/^\d+$/.test(activityId)) throw new Error("Invalid Strava activity ID.");
+  if (!cookie.includes("=")) throw new Error("STRAVA_COOKIE must contain cookieName=cookieValue.");
+  const url = new URL(`https://www.strava.com/activities/${activityId}/streams`);
+  for (const type of ["latlng", "altitude", "time"]) url.searchParams.append("stream_types[]", type);
+  const response = await fetch(url, {
     headers: {
       "Accept": "application/json",
       "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-      "Cookie": cookie
-    }
+      "Cookie": cookie,
+    },
+    cache: "no-store",
   });
-
   if (!response.ok) {
-    throw new Error(`Failed to fetch streams for activity ${activityId}: ${response.statusText}. Cookie may be expired.`);
+    throw new Error(`Strava stream request failed for ${activityId} (HTTP ${response.status}). Check session access and activity permissions.`);
   }
-
-  const data = await response.json();
-
-  if (!data.latlng || !Array.isArray(data.latlng) || data.latlng.length === 0) {
-    throw new Error(`Activity ${activityId} stream is missing latlng coordinate data.`);
+  const raw: unknown = await response.json();
+  if (!raw || typeof raw !== "object") throw new Error("Unexpected Strava stream response.");
+  const obj = raw as Partial<ActivityStreams>;
+  if (!Array.isArray(obj.latlng) || obj.latlng.length < 2 ||
+    !Array.isArray(obj.time) || obj.time.length !== obj.latlng.length ||
+    !obj.time.every(t => typeof t === "number" && Number.isFinite(t))) {
+    throw new Error(`Activity ${activityId} has incomplete latlng/time streams.`);
   }
-
-  // Uncomment if you still need to generate the encoded polyline for database storage
-  // data.encoded_polyline = compressRouteData(data.latlng);
-
-  return data;
+  if (!obj.latlng.every(p => Array.isArray(p) && p.length >= 2 &&
+    typeof p[0] === "number" && typeof p[1] === "number")) {
+    throw new Error(`Activity ${activityId} has invalid GPS coordinates.`);
+  }
+  const altitude = Array.isArray(obj.altitude) && obj.altitude.length === obj.latlng.length
+    ? obj.altitude : new Array(obj.latlng.length).fill(0);
+  return { latlng: obj.latlng, time: obj.time, altitude };
 }

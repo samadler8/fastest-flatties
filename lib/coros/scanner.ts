@@ -1,7 +1,6 @@
 import { supabase } from '@/lib/supabase';
 import { extractSubTrack, RouteConfig } from '@/lib/geo/matcher';
 import { verifyAttempt } from '@/lib/verifier';
-import * as turf from '@turf/turf';
 
 export async function scanAndSyncCorosActivities(athleteId: string, accessToken: string) {
   // 1. Fetch user workouts from COROS Open API

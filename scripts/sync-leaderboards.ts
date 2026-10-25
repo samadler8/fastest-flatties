@@ -1,6 +1,5 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as turf from '@turf/turf';
 import { fetchSegmentTopEfforts, fetchActivityStreams } from '../lib/strava/scraper';
 import { extractSubTrack, RouteConfig } from '../lib/geo/matcher';
 import { verifyAttempt } from '../lib/verifier';
@@ -45,6 +44,11 @@ async function syncLeaderboards() {
     const lineStringFeature = geoJsonRaw.type === 'FeatureCollection'
       ? geoJsonRaw.features[0]
       : geoJsonRaw;
+
+    if (!routeConfig.stravaSegmentId) {
+      console.warn(`Skipping ${routeConfig.id}: no stravaSegmentId in route definition.`);
+      continue;
+    }
 
     // 1. Fetch Top Segment Efforts
     console.log(`Fetching top segment efforts for Strava Segment ${routeConfig.stravaSegmentId}...`);

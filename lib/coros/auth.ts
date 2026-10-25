@@ -1,14 +1,6 @@
 const COROS_CLIENT_ID = process.env.COROS_CLIENT_ID!;
 const COROS_CLIENT_SECRET = process.env.COROS_CLIENT_SECRET!;
-const REDIRECT_URI = `${process.env.NEXT_PUBLIC_SITE_URL}/api/auth/coros/callback`;
-
-/**
- * Returns the authorization URL to redirect users to COROS sign-in
- */
-export function getCorosAuthUrl(athleteId: string): string {
-  const state = Buffer.from(JSON.stringify({ athleteId })).toString('base64');
-  return `https://open.coros.com/oauth/authorize?client_id=${COROS_CLIENT_ID}&response_type=code&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=${state}`;
-}
+const REDIRECT_URI = process.env.COROS_REDIRECT_URI!;
 
 /**
  * Exchanges authorization code for access and refresh tokens

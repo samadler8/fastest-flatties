@@ -20,6 +20,10 @@ export interface RouteConfig {
   startCoordinates: [number, number]; // [lat, lng]
   endCoordinates: [number, number];   // [lat, lng]
   bufferToleranceMeters: number;
+  /** Optional fields used by data/routes/*.json and leaderboard tooling. */
+  name?: string;
+  geoJsonPath?: string;
+  stravaSegmentId?: string;
 }
 
 /**
@@ -61,7 +65,8 @@ export function extractSubTrack(
   }
 
   // 2. Build 30-meter Buffer Polygon around the baseline route
-  const routeBufferPolygon = turf.buffer(officialLineStringGeoJSON, 0.03, { units: 'kilometers' });[cite: 1]
+  const routeBufferPolygon = turf.buffer(officialLineStringGeoJSON, 0.03, { units: 'kilometers' });
+  if (!routeBufferPolygon) return null;
 
   let bestCandidate: SubTrackCandidate | null = null;
 
@@ -87,7 +92,7 @@ export function extractSubTrack(
       const bufferMatchRatio = insideCount / slicedLatlng.length;
 
       // 4. Compute Sub-Track Metrics
-      const elapsedTimeSeconds = slicedTime[slicedTime.length - 1] - slicedTime[0];[cite: 1]
+      const elapsedTimeSeconds = slicedTime[slicedTime.length - 1] - slicedTime[0];
 
       let elevationGainMeters = 0;
       let lastAltitude = slicedAltitude[0];

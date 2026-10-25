@@ -1,11 +1,10 @@
 "use client";
 
-import { getCorosAuthUrl } from '@/lib/coros/auth';
 import { Cpu } from 'lucide-react';
 
 export default function CorosConnectButton({ athleteId }: { athleteId: string }) {
   const handleConnect = () => {
-    window.location.href = getCorosAuthUrl(athleteId);
+    window.location.href = `/api/auth/coros?athleteId=${encodeURIComponent(athleteId)}`;
   };
 
   return (
