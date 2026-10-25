@@ -66,34 +66,32 @@ export async function fetchSegmentTopEfforts(
 }
 
 /**
- * Fetches high-resolution stream arrays from Strava's web endpoint and compresses them.
- * This returns only what is needed for the database (the encoded polyline).
+ * Fetches high-resolution stream arrays from Strava's web endpoint using a session cookie.
+ * Returns the raw arrays for GPX generation, and optionally compresses the polyline for the DB.
  */
-export async function fetchAndCompressActivity(activityId: string): Promise<CompressedActivityStream> {
-  // Using the frontend web endpoint to bypass strict API rate limits for streams
-  const streamUrl = `https://www.strava.com/activities/${activityId}/streams?stream_types[]=latlng`;
+export async function fetchActivityStreams(activityId: string, cookie: string): Promise<StravaStreams> {
+  const streamUrl = `https://www.strava.com/activities/${activityId}/streams?stream_types[]=latlng&stream_types[]=altitude&stream_types[]=time`;
 
   const response = await fetch(streamUrl, {
     headers: {
-      'User-Agent': 'FastestFlattiesScraper/1.0',
-      'Accept': 'application/json',
-    },
+      "Accept": "application/json",
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+      "Cookie": cookie
+    }
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to fetch streams for activity ${activityId}: ${response.statusText}`);
+    throw new Error(`Failed to fetch streams for activity ${activityId}: ${response.statusText}. Cookie may be expired.`);
   }
 
-  const data = (await response.json()) as any;
+  const data = await response.json();
 
-  if (!data.latlng || !Array.isArray(data.latlng)) {
+  if (!data.latlng || !Array.isArray(data.latlng) || data.latlng.length === 0) {
     throw new Error(`Activity ${activityId} stream is missing latlng coordinate data.`);
   }
 
-  const encoded_polyline = compressRouteData(data.latlng);
+  // Uncomment if you still need to generate the encoded polyline for database storage
+  // data.encoded_polyline = compressRouteData(data.latlng);
 
-  return {
-    activity_id: activityId,
-    encoded_polyline
-  };
+  return data;
 }

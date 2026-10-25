@@ -15,18 +15,27 @@ function getDistanceFromLatLonInM(lat1: number, lon1: number, lat2: number, lon2
   return R * c;
 }
 
+// Removed the stravaCookie parameter since we can pull it securely from env vars on the server
 export async function processStravaActivity(url: string, availableRoutes: any[]) {
   try {
+    const stravaCookie = process.env.STRAVA_COOKIE;
+    if (!stravaCookie) {
+      throw new Error("Strava authentication cookie is not configured on the server.");
+    }
+
     const match = url.match(/(?:activities\/|activity\/)(\d+)/);
     if (!match || !match[1]) throw new Error("Invalid Strava activity URL");
     const activityId = match[1];
 
-    // 1. Fetch public page HTML to extract Athlete Name & Title via OpenGraph tags
+    // 1. Add the Cookie header to the HTML fetch
     const pageRes = await fetch(`https://www.strava.com/activities/${activityId}`, {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)" }
+      headers: { 
+        "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+        "Cookie": stravaCookie 
+      }
     });
     const html = await pageRes.text();
-    
+
     let athleteName = "Unknown Athlete";
     let activityTitle = "Strava Activity";
     
@@ -40,12 +49,9 @@ export async function processStravaActivity(url: string, availableRoutes: any[])
       }
     }
 
-    // 2. Fetch Streams
-    const streams = await fetchActivityStreams(activityId);
-    if (!streams.latlng || streams.latlng.length === 0) {
-      throw new Error("No GPS data found in this activity");
-    }
-
+    // 2. Fetch Streams using the merged function
+    const streams = await fetchActivityStreams(activityId, stravaCookie);
+    
     const elapsedSeconds = streams.time[streams.time.length - 1] - streams.time[0];
     const startCoord = streams.latlng[0];
     const endCoord = streams.latlng[streams.latlng.length - 1];
@@ -55,7 +61,7 @@ export async function processStravaActivity(url: string, availableRoutes: any[])
     const TOLERANCE_METERS = 200; // Allow 200m buffer for GPS drift at trailheads
 
     for (const route of availableRoutes) {
-      if (!route.startLat) continue; // Skip if route metadata isn't fully populated in DB yet
+      if (!route.startLat) continue; 
       
       const startDist = getDistanceFromLatLonInM(startCoord[0], startCoord[1], route.startLat, route.startLng);
       const endDist = getDistanceFromLatLonInM(endCoord[0], endCoord[1], route.endLat, route.endLng);

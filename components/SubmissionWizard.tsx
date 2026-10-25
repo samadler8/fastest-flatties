@@ -31,7 +31,10 @@ export default function SubmissionWizard({
     setIsProcessing(true);
     try {
       // Pass available routes to the backend for spatial matching
-      const result = await processStravaActivity(stravaUrl, availableRoutes);
+      const result = await processStravaActivity(
+        stravaUrl,
+        availableRoutes
+      );
       if (!result.success) throw new Error(result.error);
       
       setProcessedGpx(result.gpxData!);
