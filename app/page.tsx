@@ -1,5 +1,5 @@
 import { supabase } from "@/lib/supabase";
-import { Mountain, MapPin, TrendingUp, Trophy, ArrowRight } from "lucide-react";
+import { Mountain, MapPin, TrendingUp, Trophy, ArrowRight, UploadCloud } from "lucide-react";
 import Link from "next/link";
 
 export const dynamic = 'force-dynamic';
@@ -19,9 +19,18 @@ export default async function HomePage() {
           <span className="font-serif text-xl font-bold text-sandstone-100 flex items-center gap-2 tracking-tight">
             <Mountain size={22} className="text-flatiron-red" /> FASTEST FATTIES
           </span>
-          <span className="font-mono text-xs text-flatiron-ochre uppercase tracking-widest border border-sandstone-800 bg-sandstone-950 px-3 py-1">
-            Boulder Flatiron Records
-          </span>
+          <div className="flex items-center gap-4">
+            <span className="hidden sm:inline-block font-mono text-xs text-flatiron-ochre uppercase tracking-widest border border-sandstone-800 bg-sandstone-950 px-3 py-1">
+              Boulder Flatiron Records
+            </span>
+            <Link 
+              href="/submit" 
+              className="inline-flex items-center gap-2 px-3 py-1.5 bg-flatiron-red text-white font-mono text-xs font-bold uppercase tracking-widest hover:bg-red-800 transition-colors border border-transparent hover:border-sandstone-400"
+            >
+              <UploadCloud size={14} />
+              [ Submit Effort ]
+            </Link>
+          </div>
         </div>
       </div>
 

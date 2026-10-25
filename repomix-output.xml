@@ -44,11 +44,14 @@ The content is organized as follows:
   workflows/
     deploy_migrations.yml
 app/
+  actions/
+    strava.ts
   api/
     auth/
       coros/
         callback/
           route.ts
+        route.ts
   athletes/
     [id]/
       page.tsx
@@ -67,6 +70,7 @@ components/
   RouteDocViewer.tsx
   RouteRulesMap.tsx
   RouteRulesSection.tsx
+  SubmissionWizard.tsx
   VerifiedLeaderboard.tsx
 data/
   routes/
@@ -111,20 +115,303 @@ tsconfig.json
 <files>
 This section contains the contents of the repository's files.
 
-<file path="app/api/auth/coros/callback/route.ts">
-import { NextRequest, NextResponse } from 'next/server';
-import { exchangeCorosCode } from '@/lib/coros/auth';
-import { supabase } from '@/lib/supabase';
-import { scanAndSyncCorosActivities } from '@/lib/coros/scanner';
+<file path="app/actions/strava.ts">
+"use server";
 
-export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const code = searchParams.get('code');
-  const state = searchParams.get('state');
+import { fetchActivityStreams } from "@/lib/strava/scraper";
 
-  if (!code || !state) {
-    return NextResponse.json({ error: 'Missing code or state' }, { status: 400 });
+// Helper to calculate distance between two coordinates in meters (Haversine)
+function getDistanceFromLatLonInM(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const R = 6371e3; // Earth's radius in meters
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a = 
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * 
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+export async function processStravaActivity(url: string, availableRoutes: any[]) {
+  try {
+    const match = url.match(/(?:activities\/|activity\/)(\d+)/);
+    if (!match || !match[1]) throw new Error("Invalid Strava activity URL");
+    const activityId = match[1];
+
+    // 1. Fetch public page HTML to extract Athlete Name & Title via OpenGraph tags
+    const pageRes = await fetch(`https://www.strava.com/activities/${activityId}`, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)" }
+    });
+    const html = await pageRes.text();
+    
+    let athleteName = "Unknown Athlete";
+    let activityTitle = "Strava Activity";
+    
+    // Strava's og:title usually looks like "Activity Name - Athlete Name | Strava"
+    const titleMatch = html.match(/<meta property="og:title" content="([^"]+)"/);
+    if (titleMatch && titleMatch[1]) {
+      const parts = titleMatch[1].split(' - ');
+      if (parts.length >= 2) {
+        activityTitle = parts[0].trim();
+        athleteName = parts[1].split('|')[0].trim();
+      }
+    }
+
+    // 2. Fetch Streams
+    const streams = await fetchActivityStreams(activityId);
+    if (!streams.latlng || streams.latlng.length === 0) {
+      throw new Error("No GPS data found in this activity");
+    }
+
+    const elapsedSeconds = streams.time[streams.time.length - 1] - streams.time[0];
+    const startCoord = streams.latlng[0];
+    const endCoord = streams.latlng[streams.latlng.length - 1];
+
+    // 3. Auto-Match Route (Requires your available routes to have start/end lat/lng in DB)
+    let detectedRouteId = null;
+    const TOLERANCE_METERS = 200; // Allow 200m buffer for GPS drift at trailheads
+
+    for (const route of availableRoutes) {
+      if (!route.startLat) continue; // Skip if route metadata isn't fully populated in DB yet
+      
+      const startDist = getDistanceFromLatLonInM(startCoord[0], startCoord[1], route.startLat, route.startLng);
+      const endDist = getDistanceFromLatLonInM(endCoord[0], endCoord[1], route.endLat, route.endLng);
+      
+      if (startDist <= TOLERANCE_METERS && endDist <= TOLERANCE_METERS) {
+        detectedRouteId = route.id;
+        break;
+      }
+    }
+
+    // 4. Generate GPX
+    let gpxData = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1">\n<trk>\n<trkseg>\n`;
+    for (let i = 0; i < streams.latlng.length; i++) {
+      gpxData += `<trkpt lat="${streams.latlng[i][0]}" lon="${streams.latlng[i][1]}"><ele>${streams.altitude[i] || 0}</ele></trkpt>\n`;
+    }
+    gpxData += `</trkseg>\n</trk>\n</gpx>`;
+
+    return {
+      success: true,
+      activityId,
+      athleteName,
+      activityTitle,
+      elapsedSeconds,
+      gpxData,
+      detectedRouteId
+    };
+  } catch (error: any) {
+    return { success: false, error: error.message };
   }
+}
+</file>
+
+<file path="components/SubmissionWizard.tsx">
+"use client";
+
+import { useState } from "react";
+import { Activity, Search, Map, CheckCircle, AlertTriangle, FastForward } from "lucide-react";
+import { processStravaActivity } from "@/app/actions/strava";
+
+// Ensure RouteInfo includes startLat/startLng so the backend can match them
+type RouteInfo = { id: string; name: string; startLat?: number; startLng?: number; endLat?: number; endLng?: number };
+type AthleteInfo = { id: string; name: string };
+
+export default function SubmissionWizard({ 
+  availableRoutes, 
+  availableAthletes 
+}: { 
+  availableRoutes: RouteInfo[],
+  availableAthletes: AthleteInfo[]
+}) {
+  const [step, setStep] = useState<1 | 2>(1); // Reduced from 3 steps to 2
+  const [stravaUrl, setStravaUrl] = useState("");
+  const [isProcessing, setIsProcessing] = useState(false);
+  
+  // Auto-populated State
+  const [finalRouteId, setFinalRouteId] = useState<string>("");
+  const [selectedAthleteId, setSelectedAthleteId] = useState<string>("");
+  const [athleteNameFallback, setAthleteNameFallback] = useState<string>("");
+  const [confirmedTime, setConfirmedTime] = useState<number>(0);
+  const [processedGpx, setProcessedGpx] = useState<string>("");
+  const [isFullyAutomated, setIsFullyAutomated] = useState(false);
+
+  const handleProcessActivity = async () => {
+    setIsProcessing(true);
+    try {
+      // Pass available routes to the backend for spatial matching
+      const result = await processStravaActivity(stravaUrl, availableRoutes);
+      if (!result.success) throw new Error(result.error);
+      
+      setProcessedGpx(result.gpxData!);
+      setConfirmedTime(result.elapsedSeconds!);
+      
+      // Auto-Match Route
+      if (result.detectedRouteId) {
+        setFinalRouteId(result.detectedRouteId);
+      }
+
+      // Auto-Match Athlete (Fuzzy match by exact name)
+      const matchedAthlete = availableAthletes.find(
+        a => a.name.toLowerCase() === result.athleteName?.toLowerCase()
+      );
+      
+      if (matchedAthlete) {
+        setSelectedAthleteId(matchedAthlete.id);
+      } else {
+        setSelectedAthleteId("new_athlete");
+        setAthleteNameFallback(result.athleteName!);
+      }
+
+      // If both route and athlete were successfully identified, flag for UI
+      if (result.detectedRouteId && matchedAthlete) {
+        setIsFullyAutomated(true);
+      }
+
+      setStep(2);
+    } catch (error: any) {
+      alert(`Failed to process activity: ${error.message}`);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleSubmit = async () => {
+    setIsProcessing(true);
+    // Execute final Supabase submission here using finalRouteId, selectedAthleteId, confirmedTime
+    alert("Fully automated submission successful!");
+    setIsProcessing(false);
+  };
+
+  return (
+    <div className="max-w-2xl mx-auto bg-sandstone-900 border-2 border-sandstone-800 shadow-xl p-8 font-serif text-sandstone-100">
+      
+      {/* STEP 1: ONE-CLICK PASTE */}
+      {step === 1 && (
+        <div className="space-y-6">
+          <h2 className="text-2xl font-bold text-flatiron-red flex items-center gap-2">
+            <Activity /> Auto-Import Activity
+          </h2>
+          
+          <input 
+            type="url" 
+            placeholder="Paste Strava URL here..."
+            value={stravaUrl}
+            onChange={(e) => setStravaUrl(e.target.value)}
+            className="w-full bg-sandstone-950 border border-sandstone-700 p-4 text-sandstone-100 focus:outline-none focus:border-flatiron-red"
+          />
+
+          <button 
+            onClick={handleProcessActivity}
+            disabled={isProcessing || !stravaUrl}
+            className="w-full py-4 bg-flatiron-red text-white font-bold tracking-widest uppercase disabled:opacity-50 hover:bg-red-800 transition-colors flex justify-center items-center gap-2"
+          >
+            {isProcessing ? <Search className="animate-spin" /> : "Extract & Match Data"}
+          </button>
+        </div>
+      )}
+
+      {/* STEP 2: REVIEW & SUBMIT */}
+      {step === 2 && (
+        <div className="space-y-6">
+          <h2 className="text-2xl font-bold flex items-center gap-2">
+            {isFullyAutomated ? (
+              <><FastForward className="text-green-500" /> Perfect Match Found</>
+            ) : (
+              <><CheckCircle className="text-flatiron-ochre" /> Review Extracted Data</>
+            )}
+          </h2>
+
+          <div className="bg-sandstone-950 border border-sandstone-700 p-6 grid gap-6">
+            {/* Route Section */}
+            <div>
+              <label className="font-mono text-xs text-sandstone-400 uppercase block mb-2">Route</label>
+              <select 
+                value={finalRouteId}
+                onChange={(e) => setFinalRouteId(e.target.value)}
+                className={`w-full p-3 focus:outline-none ${finalRouteId ? 'bg-green-900/20 border-green-900 text-white' : 'bg-sandstone-900 border-sandstone-700 text-sandstone-100'}`}
+              >
+                <option value="">-- Missing: Select Manually --</option>
+                {availableRoutes.map(r => (
+                  <option key={r.id} value={r.id}>{r.name}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Athlete Section */}
+            <div>
+              <label className="font-mono text-xs text-sandstone-400 uppercase block mb-2">Athlete Profile</label>
+              <select 
+                value={selectedAthleteId}
+                onChange={(e) => setSelectedAthleteId(e.target.value)}
+                className={`w-full p-3 focus:outline-none ${selectedAthleteId && selectedAthleteId !== 'new_athlete' ? 'bg-green-900/20 border-green-900 text-white' : 'bg-sandstone-900 border-sandstone-700 text-sandstone-100'}`}
+              >
+                <option value="">-- Missing: Select Manually --</option>
+                <option value="new_athlete">[ CREATE NEW: {athleteNameFallback} ]</option>
+                {availableAthletes.map(a => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Time Section */}
+            <div>
+               <label className="font-mono text-xs text-sandstone-400 uppercase block mb-2">Total Elapsed Time (Seconds)</label>
+               <input 
+                  type="number" 
+                  value={confirmedTime}
+                  readOnly
+                  className="w-full bg-sandstone-900 border border-sandstone-700 p-3 text-sandstone-400 cursor-not-allowed"
+                />
+            </div>
+          </div>
+
+          <div className="flex gap-4">
+            <button onClick={() => setStep(1)} className="px-6 py-3 border border-sandstone-700 text-sandstone-400 hover:text-white uppercase font-mono text-sm tracking-wider">Cancel</button>
+            <button 
+              onClick={handleSubmit}
+              disabled={!finalRouteId || !selectedAthleteId || isProcessing}
+              className="flex-1 py-3 bg-green-700 text-white font-bold tracking-widest uppercase disabled:opacity-50 hover:bg-green-600 transition-colors"
+            >
+              Confirm Submission
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+</file>
+
+<file path="app/api/auth/coros/callback/route.ts">
+import { cookies } from "next/headers";
+import { NextResponse } from "next/server";
+
+export async function GET(request: Request) {
+  const url = new URL(request.url);
+  const returnedState = url.searchParams.get("state");
+  const code = url.searchParams.get("code");
+
+  // 1. Retrieve the secure cookie
+  const sessionCookie = cookies().get("coros_oauth_session")?.value;
+
+  if (!sessionCookie || !returnedState || !code) {
+    return NextResponse.json({ error: "Missing OAuth parameters or session expired." }, { status: 400 });
+  }
+
+  // 2. Parse the cookie and validate the state
+  const session = JSON.parse(sessionCookie);
+
+  if (session.state !== returnedState) {
+    // CSRF Attack detected or invalid session
+    return NextResponse.json({ error: "Invalid state parameter. CSRF validation failed." }, { status: 403 });
+  }
+
+  // 3. Extract the athleteId securely from the cookie (NOT the URL parameter)
+  const athleteId = session.athleteId;
+
+  // 4. Clear the one-time-use cookie
+  cookies().delete("coros_oauth_session");
 
   try {
     const { athleteId } = JSON.parse(Buffer.from(state, 'base64').toString('ascii'));
@@ -148,11 +435,49 @@ export async function GET(req: NextRequest) {
     // 2. Trigger automatic scan of athlete's COROS workouts
     await scanAndSyncCorosActivities(athleteId, tokenData.access_token);
 
-    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_SITE_URL}/athletes/${athleteId}?coros=connected`);
+    return NextResponse.redirect(new URL(`/athletes/${athleteId}`, request.url));
   } catch (err: any) {
     console.error('COROS OAuth Error:', err.message);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
+}
+</file>
+
+<file path="app/api/auth/coros/route.ts">
+import { cookies } from "next/headers";
+import { NextResponse } from "next/server";
+
+export async function GET(request: Request) {
+  const url = new URL(request.url);
+  const athleteId = url.searchParams.get("athleteId");
+
+  if (!athleteId) {
+    return NextResponse.json({ error: "Missing athleteId" }, { status: 400 });
+  }
+
+  // Generate a cryptographically secure random state
+  const state = crypto.randomUUID();
+
+  // Store both the state and the athleteId in a secure, HTTP-only cookie.
+  // This ensures the client cannot tamper with it.
+  cookies().set({
+    name: "coros_oauth_session",
+    value: JSON.stringify({ state, athleteId }),
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: 60 * 10, // 10 minute expiration
+  });
+
+  // Redirect to COROS OAuth with the secure state
+  const corosAuthUrl = new URL("https://coros.com/oauth2/authorize");
+  corosAuthUrl.searchParams.set("client_id", process.env.COROS_CLIENT_ID!);
+  corosAuthUrl.searchParams.set("redirect_uri", process.env.COROS_REDIRECT_URI!);
+  corosAuthUrl.searchParams.set("response_type", "code");
+  corosAuthUrl.searchParams.set("state", state); // Pass only the random UUID
+
+  return NextResponse.redirect(corosAuthUrl.toString());
 }
 </file>
 
@@ -182,8 +507,17 @@ export default function CorosConnectButton({ athleteId }: { athleteId: string })
 "use client";
 
 import { useState } from "react";
-import RouteRulesMap from "@/components/RouteRulesMap";
+import dynamic from "next/dynamic";
 import RouteDocViewer from "@/components/RouteDocViewer";
+
+const RouteRulesMap = dynamic(() => import("./RouteRulesMap"), { 
+  ssr: false,
+  loading: () => (
+    <div className="h-[400px] bg-sandstone-900 border-2 border-sandstone-800 flex flex-col items-center justify-center text-sandstone-400 font-mono text-sm">
+      <span>[ LOADING MAP... ]</span>
+    </div>
+  )
+});
 
 export default function RouteRulesSection({
   gpxUrl,
@@ -573,6 +907,10 @@ export function extractSubTrack(
   let bestCandidate: SubTrackCandidate | null = null;
 
   // 3. Evaluate Candidate Start/End Index Pairs (i, j)
+  const pointBufferStatus = latlng.map(([lat, lng]) => {
+    const p = turf.point([lng, lat]);
+    return turf.booleanPointInPolygon(p, routeBufferPolygon);
+  });
   for (const i of startIndices) {
     for (const j of endIndices) {
       if (j <= i + 5) continue; // Ensure a minimal valid sub-track duration
@@ -583,12 +921,9 @@ export function extractSubTrack(
 
       // Verify Buffer Coverage (>= 95% of points must lie inside route buffer)
       let insideCount = 0;
-      slicedLatlng.forEach(([lat, lng]) => {
-        const p = turf.point([lng, lat]);
-        if (turf.booleanPointInPolygon(p, routeBufferPolygon)) {[cite: 1]
-          insideCount++;
-        }
-      });
+      for (let k = i; k <= j; k++) {
+        if (pointBufferStatus[k]) insideCount++;
+      }
 
       const bufferMatchRatio = insideCount / slicedLatlng.length;
 
@@ -596,9 +931,18 @@ export function extractSubTrack(
       const elapsedTimeSeconds = slicedTime[slicedTime.length - 1] - slicedTime[0];[cite: 1]
 
       let elevationGainMeters = 0;
+      let lastAltitude = slicedAltitude[0];
+
       for (let k = 1; k < slicedAltitude.length; k++) {
-        const diff = slicedAltitude[k] - slicedAltitude[k - 1];
-        if (diff > 0) elevationGainMeters += diff;[cite: 1]
+        const diff = slicedAltitude[k] - lastAltitude;
+        // Only register gain if the threshold is exceeded to filter GPS noise
+        if (diff > 3) { 
+          elevationGainMeters += diff;
+          lastAltitude = slicedAltitude[k];
+        } else if (diff < -3) {
+          // Update baseline for descents to accurately track subsequent climbs
+          lastAltitude = slicedAltitude[k];
+        }
       }
 
       // GeoJSON LineString coordinates use [lng, lat]
@@ -703,6 +1047,21 @@ export async function fetchActivityStreams(activityId: string): Promise<Activity
     altitude: data.altitude || [],
   };
 }
+</file>
+
+<file path="lib/supabase.ts">
+import { createClient } from '@supabase/supabase-js';
+import { Database } from './types'; // Optional: if you generate types using Supabase CLI
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  throw new Error('Missing Supabase environment variables. Please check your .env.local file.');
+}
+
+// Create a single supabase client for interacting with your database
+export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 </file>
 
 <file path="lib/verifier.ts">
@@ -883,511 +1242,6 @@ syncLeaderboards().catch((err) => {
   console.error('Unhandled error during sync:', err);
   process.exit(1);
 });
-</file>
-
-<file path="supabase/migrations/20261025000000_coros_integrations.sql">
--- Store athlete API tokens securely
-CREATE TABLE IF NOT EXISTS athlete_integrations (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  athlete_id UUID NOT NULL REFERENCES athletes(id) ON DELETE CASCADE,
-  provider TEXT NOT NULL CHECK (provider IN ('coros', 'strava', 'garmin')),
-  access_token TEXT NOT NULL,
-  refresh_token TEXT,
-  expires_at TIMESTAMPTZ,
-  coros_user_id TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT unique_athlete_provider UNIQUE (athlete_id, provider)
-);
-
--- Add source column to efforts to trace origins
-ALTER TABLE efforts 
-ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'Manual Submission' CHECK (source IN ('Manual Submission', 'Strava', 'COROS'));
-</file>
-
-<file path="app/submit/page.tsx">
-"use client";
-
-import { useState, useEffect } from "react";
-import { supabase } from "@/lib/supabase";
-import { Route } from "@/types";
-import { CheckCircle2, UploadCloud, Loader2 } from "lucide-react";
-
-export default function SubmitEffortPage() {
-  const [routes, setRoutes] = useState<Route[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
-
-  // Form State
-  const [athleteName, setAthleteName] = useState("");
-  const [routeId, setRouteId] = useState("");
-  const [date, setDate] = useState("");
-  const [hours, setHours] = useState("");
-  const [minutes, setMinutes] = useState("");
-  const [seconds, setSeconds] = useState("");
-  const [gpxFile, setGpxFile] = useState<File | null>(null);
-
-  // Fetch routes for the dropdown on mount
-  useEffect(() => {
-    async function fetchRoutes() {
-      const { data, error } = await supabase.from("routes").select("*").order("name");
-      if (data) setRoutes(data);
-      if (error) console.error("Error fetching routes:", error);
-    }
-    fetchRoutes();
-  }, []);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
-    setToast(null);
-
-    try {
-      if (!gpxFile) throw new Error("Please upload a GPX file.");
-      if (!routeId) throw new Error("Please select a route.");
-      if (!athleteName) throw new Error("Please enter your name.");
-
-      // 1. Calculate time
-      const hrs = parseInt(hours || "0", 10);
-      const mins = parseInt(minutes || "0", 10);
-      const secs = parseInt(seconds || "0", 10);
-      const totalSeconds = hrs * 3600 + mins * 60 + secs;
-      
-      const formattedTime = [
-        hrs > 0 ? hrs.toString() : null,
-        hrs > 0 ? mins.toString().padStart(2, "0") : mins.toString(),
-        secs.toString().padStart(2, "0"),
-      ].filter(Boolean).join(":");
-
-      // 2. Upload GPX File to Supabase Storage
-      const fileExt = gpxFile.name.split('.').pop();
-      const fileName = `${Date.now()}-${Math.random().toString(36).substring(2)}.${fileExt}`;
-      const filePath = `${fileName}`;
-
-      const { error: uploadError } = await supabase.storage
-        .from("gpx-files")
-        .upload(filePath, gpxFile);
-
-      if (uploadError) throw new Error("Failed to upload GPX file.");
-
-      const { data: { publicUrl } } = supabase.storage
-        .from("gpx-files")
-        .getPublicUrl(filePath);
-
-      // 3. Find or Create Athlete
-      let athleteId = "";
-      const { data: existingAthlete, error: athleteLookupError } = await supabase
-        .from("athletes")
-        .select("id")
-        .ilike("name", athleteName)
-        .maybeSingle();
-
-      if (existingAthlete) {
-        athleteId = existingAthlete.id;
-      } else {
-        const { data: newAthlete, error: createAthleteError } = await supabase
-          .from("athletes")
-          .insert({ name: athleteName })
-          .select("id")
-          .single();
-          
-        if (createAthleteError) throw new Error("Failed to create athlete record.");
-        athleteId = newAthlete.id;
-      }
-
-      // 4. Insert Effort
-      const { error: effortError } = await supabase.from("efforts").insert({
-        route_id: routeId,
-        athlete_id: athleteId,
-        time_seconds: totalSeconds,
-        formatted_time: formattedTime,
-        activity_date: date,
-        gpx_url: publicUrl,
-        verified: false, // Default to unverified pending admin approval
-      });
-
-      if (effortError) throw new Error("Failed to submit effort.");
-
-      // Success Reset
-      setToast({ message: "Effort submitted successfully! Pending verification.", type: "success" });
-      setAthleteName("");
-      setRouteId("");
-      setDate("");
-      setHours("");
-      setMinutes("");
-      setSeconds("");
-      setGpxFile(null);
-      
-    } catch (error: any) {
-      setToast({ message: error.message || "An unexpected error occurred.", type: "error" });
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-xl mx-auto bg-white rounded-xl shadow-sm border border-gray-100 p-8">
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-gray-900">Submit a Time</h1>
-          <p className="text-gray-500 mt-2">Upload your GPX file to claim your spot on the leaderboard.</p>
-        </div>
-
-        {toast && (
-          <div className={`mb-6 p-4 rounded-md flex items-center gap-3 ${toast.type === "success" ? "bg-green-50 text-green-800" : "bg-red-50 text-red-800"}`}>
-            {toast.type === "success" ? <CheckCircle2 className="w-5 h-5 text-green-500" /> : null}
-            <p className="text-sm font-medium">{toast.message}</p>
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-6">
-          {/* Athlete Name */}
-          <div>
-            <label htmlFor="athleteName" className="block text-sm font-medium text-gray-700">Athlete Name</label>
-            <input
-              type="text"
-              id="athleteName"
-              required
-              value={athleteName}
-              onChange={(e) => setAthleteName(e.target.value)}
-              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2.5 border"
-              placeholder="e.g. Anton Krupicka"
-            />
-          </div>
-
-          {/* Route Selection */}
-          <div>
-            <label htmlFor="route" className="block text-sm font-medium text-gray-700">Select Route</label>
-            <select
-              id="route"
-              required
-              value={routeId}
-              onChange={(e) => setRouteId(e.target.value)}
-              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2.5 border bg-white"
-            >
-              <option value="" disabled>Choose a Flatiron route...</option>
-              {routes.map((route) => (
-                <option key={route.id} value={route.id}>
-                  {route.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Date */}
-          <div>
-            <label htmlFor="date" className="block text-sm font-medium text-gray-700">Completion Date</label>
-            <input
-              type="date"
-              id="date"
-              required
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2.5 border"
-            />
-          </div>
-
-          {/* Elapsed Time */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Elapsed Time</label>
-            <div className="grid grid-cols-3 gap-4">
-              <div>
-                <input
-                  type="number"
-                  min="0"
-                  placeholder="HH"
-                  value={hours}
-                  onChange={(e) => setHours(e.target.value)}
-                  className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2.5 border"
-                />
-              </div>
-              <div>
-                <input
-                  type="number"
-                  min="0"
-                  max="59"
-                  placeholder="MM"
-                  required
-                  value={minutes}
-                  onChange={(e) => setMinutes(e.target.value)}
-                  className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2.5 border"
-                />
-              </div>
-              <div>
-                <input
-                  type="number"
-                  min="0"
-                  max="59"
-                  placeholder="SS"
-                  required
-                  value={seconds}
-                  onChange={(e) => setSeconds(e.target.value)}
-                  className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2.5 border"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* GPX File Upload */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">GPX Track</label>
-            <div className="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-md hover:bg-gray-50 transition-colors relative">
-              <div className="space-y-1 text-center">
-                <UploadCloud className="mx-auto h-12 w-12 text-gray-400" />
-                <div className="flex text-sm text-gray-600 justify-center">
-                  <label htmlFor="gpx-upload" className="relative cursor-pointer bg-transparent rounded-md font-medium text-blue-600 hover:text-blue-500 focus-within:outline-none">
-                    <span>Upload a file</span>
-                    <input
-                      id="gpx-upload"
-                      name="gpx-upload"
-                      type="file"
-                      accept=".gpx"
-                      className="sr-only"
-                      onChange={(e) => setGpxFile(e.target.files?.[0] || null)}
-                    />
-                  </label>
-                  <p className="pl-1">or drag and drop</p>
-                </div>
-                <p className="text-xs text-gray-500">.GPX up to 10MB</p>
-              </div>
-            </div>
-            {gpxFile && (
-              <p className="mt-2 text-sm text-gray-600">
-                Selected: <span className="font-medium text-gray-900">{gpxFile.name}</span>
-              </p>
-            )}
-          </div>
-
-          {/* Submit Button */}
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-70 disabled:cursor-not-allowed transition-all"
-          >
-            {isLoading ? (
-              <>
-                <Loader2 className="animate-spin -ml-1 mr-2 h-5 w-5" />
-                Submitting...
-              </>
-            ) : (
-              "Submit FKT"
-            )}
-          </button>
-        </form>
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="components/RouteDocViewer.tsx">
-"use client";
-
-import { MessageSquare, MapPin } from "lucide-react";
-
-export default function RouteDocViewer({
-  markdown,
-  activeFeatureId,
-  onSelectFeature,
-}: {
-  markdown: string;
-  activeFeatureId: string | null;
-  onSelectFeature: (id: string) => void;
-}) {
-  const renderInteractiveText = (text: string) => {
-    const lines = text.split("\n");
-
-    return lines.map((line, idx) => {
-      const match = line.match(/\[(.*?)\]\(#(.*?)\)/);
-
-      if (match) {
-        const [full, linkText, featureId] = match;
-        const isActive = activeFeatureId === featureId;
-        const parts = line.split(full);
-
-        return (
-          <p key={idx} className="my-2 leading-relaxed">
-            {parts[0]}
-            <button
-              onClick={() => onSelectFeature(featureId)}
-              className={`inline-flex items-center gap-1 font-mono text-xs font-bold px-2 py-0.5 border transition-all ${
-                isActive
-                  ? "bg-flatiron-gold text-sandstone-950 border-flatiron-gold shadow-lg scale-105"
-                  : "bg-sandstone-900 text-flatiron-ochre border-sandstone-700 hover:border-flatiron-red hover:text-sandstone-100"
-              }`}
-            >
-              <MapPin size={12} /> {linkText}
-            </button>
-            {parts[1]}
-          </p>
-        );
-      }
-
-      if (line.startsWith("# ")) {
-        return <h1 key={idx} className="text-2xl font-serif font-bold text-sandstone-100 mt-6 mb-3 border-b border-sandstone-800 pb-1">{line.replace("# ", "")}</h1>;
-      }
-      if (line.startsWith("## ")) {
-        return <h2 key={idx} className="text-lg font-serif font-bold text-flatiron-ochre mt-4 mb-2">{line.replace("## ", "")}</h2>;
-      }
-
-      return <p key={idx} className="my-2 text-sandstone-200 text-sm leading-relaxed">{line}</p>;
-    });
-  };
-
-  return (
-    <div className="bg-sandstone-900 border-2 border-sandstone-800 p-8 shadow-2xl font-serif space-y-4">
-      <div className="flex items-center justify-between border-b border-sandstone-800 pb-3">
-        <span className="font-mono text-xs text-flatiron-ochre uppercase tracking-widest flex items-center gap-2">
-          <MessageSquare size={14} /> Official Route Specification & Rules Document
-        </span>
-        <span className="font-mono text-[10px] text-sandstone-400">
-          [ Click embedded links to focus map ]
-        </span>
-      </div>
-
-      <div className="prose prose-invert max-w-none font-serif">
-        {renderInteractiveText(markdown)}
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="components/RouteRulesMap.tsx">
-"use client";
-
-import { useEffect, useRef } from "react";
-import L from "leaflet";
-import "leaflet/dist/leaflet.css";
-
-type GeoJSONFeature = {
-  id: string;
-  properties: {
-    name: string;
-    type: "checkpoint" | "freestyle_zone" | "corridor";
-    radius_meters?: number;
-    sequence_order?: number;
-    description?: string;
-  };
-  geometry: any;
-};
-
-export default function RouteRulesMap({
-  gpxUrl,
-  rulesGeoJSON,
-  activeFeatureId,
-  onSelectFeature,
-}: {
-  gpxUrl?: string;
-  rulesGeoJSON?: { features: GeoJSONFeature[] };
-  activeFeatureId: string | null;
-  onSelectFeature: (id: string) => void;
-}) {
-  const mapRef = useRef<L.Map | null>(null);
-  const layerMapRef = useRef<Map<string, L.Layer>>(new Map());
-  const mapContainerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!mapContainerRef.current || mapRef.current) return;
-
-    const map = L.map(mapContainerRef.current, {
-      center: [39.9881, -105.2925],
-      zoom: 14,
-      zoomControl: false,
-    });
-
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: "&copy; OpenStreetMap",
-    }).addTo(map);
-
-    mapRef.current = map;
-  }, []);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !rulesGeoJSON?.features) return;
-
-    layerMapRef.current.clear();
-
-    rulesGeoJSON.features.forEach((feature) => {
-      const { id, properties, geometry } = feature;
-
-      if (properties.type === "checkpoint" && geometry.type === "Point") {
-        const [lng, lat] = geometry.coordinates;
-
-        const circle = L.circle([lat, lng], {
-          radius: properties.radius_meters || 15,
-          color: activeFeatureId === id ? "#f59e0b" : "#c04a29",
-          fillColor: activeFeatureId === id ? "#f59e0b" : "#c04a29",
-          fillOpacity: 0.35,
-          weight: activeFeatureId === id ? 3 : 2,
-        }).addTo(map);
-
-        circle.bindTooltip(
-          `<strong>#${properties.sequence_order} ${properties.name}</strong><br/>Radius: ${properties.radius_meters}m`,
-          { className: "font-mono text-xs" }
-        );
-
-        circle.on("click", () => onSelectFeature(id));
-        layerMapRef.current.set(id, circle);
-      } else if (properties.type === "freestyle_zone" && geometry.type === "Polygon") {
-        const polygon = L.geoJSON(geometry, {
-          style: {
-            color: activeFeatureId === id ? "#f59e0b" : "#d97706",
-            fillColor: "#d97706",
-            fillOpacity: 0.15,
-            dashArray: "4, 4",
-          },
-        }).addTo(map);
-
-        polygon.on("click", () => onSelectFeature(id));
-        layerMapRef.current.set(id, polygon);
-      }
-    });
-  }, [rulesGeoJSON, activeFeatureId, onSelectFeature]);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !activeFeatureId) return;
-
-    const targetLayer = layerMapRef.current.get(activeFeatureId);
-    if (targetLayer) {
-      if ("getBounds" in targetLayer) {
-        map.fitBounds((targetLayer as L.Polygon).getBounds(), { padding: [50, 50], maxZoom: 16 });
-      } else if ("getLatLng" in targetLayer) {
-        map.setView((targetLayer as L.Circle).getLatLng(), 16, { animate: true });
-      }
-    }
-  }, [activeFeatureId]);
-
-  return (
-    <div className="relative w-full h-[500px] border-2 border-sandstone-800 shadow-2xl">
-      <div ref={mapContainerRef} className="w-full h-full bg-sandstone-950" />
-      <div className="absolute top-3 right-3 bg-sandstone-950/90 border border-sandstone-800 p-2 font-mono text-[10px] text-sandstone-300 z-[1000] space-y-1">
-        <div className="flex items-center gap-2">
-          <span className="w-3 h-3 rounded-full bg-flatiron-red inline-block" /> Required Checkpoint Radius
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="w-3 h-3 border border-dashed border-flatiron-ochre inline-block" /> Freestyle Zone
-        </div>
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="lib/supabase.ts">
-import { createClient } from '@supabase/supabase-js';
-import { Database } from './types'; // Optional: if you generate types using Supabase CLI
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Missing Supabase environment variables. Please check your .env.local file.');
-}
-
-// Create a single supabase client for interacting with your database
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 </file>
 
 <file path="supabase/migrations/20261023145200_DEF_20191010.sql">
@@ -1652,6 +1506,25 @@ Athletes must pass within the designated proximity radius of each formation in s
     ]
   }'::jsonb
 WHERE id = 'f5353533-5353-5353-5353-535353535353';
+</file>
+
+<file path="supabase/migrations/20261025000000_coros_integrations.sql">
+-- Store athlete API tokens securely
+CREATE TABLE IF NOT EXISTS athlete_integrations (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  athlete_id UUID NOT NULL REFERENCES athletes(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL CHECK (provider IN ('coros', 'strava', 'garmin')),
+  access_token TEXT NOT NULL,
+  refresh_token TEXT,
+  expires_at TIMESTAMPTZ,
+  coros_user_id TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT unique_athlete_provider UNIQUE (athlete_id, provider)
+);
+
+-- Add source column to efforts to trace origins
+ALTER TABLE efforts 
+ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'Manual Submission' CHECK (source IN ('Manual Submission', 'Strava', 'COROS'));
 </file>
 
 <file path="types/index.ts">
@@ -1933,6 +1806,281 @@ export default async function AthletePage({
 }
 </file>
 
+<file path="app/submit/page.tsx">
+"use client";
+
+import { useState, useEffect } from "react";
+import { supabase } from "@/lib/supabase";
+import { Route } from "@/types";
+import { CheckCircle2, UploadCloud, Loader2 } from "lucide-react";
+
+export default function SubmitEffortPage() {
+  const [routes, setRoutes] = useState<Route[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+
+  // Form State
+  const [athleteName, setAthleteName] = useState("");
+  const [routeId, setRouteId] = useState("");
+  const [date, setDate] = useState("");
+  const [hours, setHours] = useState("");
+  const [minutes, setMinutes] = useState("");
+  const [seconds, setSeconds] = useState("");
+  const [gpxFile, setGpxFile] = useState<File | null>(null);
+
+  // Fetch routes for the dropdown on mount
+  useEffect(() => {
+    async function fetchRoutes() {
+      const { data, error } = await supabase.from("routes").select("*").order("name");
+      if (data) setRoutes(data);
+      if (error) console.error("Error fetching routes:", error);
+    }
+    fetchRoutes();
+  }, []);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setToast(null);
+
+    try {
+      if (!gpxFile) throw new Error("Please upload a GPX file.");
+      if (!routeId) throw new Error("Please select a route.");
+      if (!athleteName) throw new Error("Please enter your name.");
+
+      // 1. Calculate time
+      const hrs = parseInt(hours || "0", 10);
+      const mins = parseInt(minutes || "0", 10);
+      const secs = parseInt(seconds || "0", 10);
+      const totalSeconds = hrs * 3600 + mins * 60 + secs;
+      
+      const formattedTime = [
+        hrs > 0 ? hrs.toString() : null,
+        hrs > 0 ? mins.toString().padStart(2, "0") : mins.toString(),
+        secs.toString().padStart(2, "0"),
+      ].filter(Boolean).join(":");
+
+      // 2. Upload GPX File to Supabase Storage
+      const fileExt = gpxFile.name.split('.').pop();
+      const fileName = `${Date.now()}-${Math.random().toString(36).substring(2)}.${fileExt}`;
+      const filePath = `${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("gpx-files")
+        .upload(filePath, gpxFile);
+
+      if (uploadError) throw new Error("Failed to upload GPX file.");
+
+      const { data: { publicUrl } } = supabase.storage
+        .from("gpx-files")
+        .getPublicUrl(filePath);
+
+      // 3. Find or Create Athlete
+      let athleteId = "";
+      const { data: existingAthletes, error: athleteLookupError } = await supabase
+        .from("athletes")
+        .select("id")
+        .ilike("name", athleteName)
+        .limit(1);
+
+      if (existingAthletes && existingAthletes.length > 0) {
+        athleteId = existingAthletes[0].id;
+      } else {
+        const { data: newAthlete, error: createAthleteError } = await supabase
+          .from("athletes")
+          .insert({ name: athleteName })
+          .select("id")
+          .single();
+          
+        if (createAthleteError) throw new Error("Failed to create athlete record.");
+        athleteId = newAthlete.id;
+      }
+
+      // 4. Insert Effort
+      const { error: effortError } = await supabase.from("efforts").insert({
+        route_id: routeId,
+        athlete_id: athleteId,
+        time_seconds: totalSeconds,
+        formatted_time: formattedTime,
+        activity_date: date,
+        gpx_url: publicUrl,
+        verified: false, // Default to unverified pending admin approval
+      });
+
+      if (effortError) throw new Error("Failed to submit effort.");
+
+      // Success Reset
+      setToast({ message: "Effort submitted successfully! Pending verification.", type: "success" });
+      setAthleteName("");
+      setRouteId("");
+      setDate("");
+      setHours("");
+      setMinutes("");
+      setSeconds("");
+      setGpxFile(null);
+      
+    } catch (error: any) {
+      setToast({ message: error.message || "An unexpected error occurred.", type: "error" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-xl mx-auto bg-white rounded-xl shadow-sm border border-gray-100 p-8">
+        <div className="text-center mb-8">
+          <h1 className="text-3xl font-bold text-gray-900">Submit a Time</h1>
+          <p className="text-gray-500 mt-2">Upload your GPX file to claim your spot on the leaderboard.</p>
+        </div>
+
+        {toast && (
+          <div className={`mb-6 p-4 rounded-md flex items-center gap-3 ${toast.type === "success" ? "bg-green-50 text-green-800" : "bg-red-50 text-red-800"}`}>
+            {toast.type === "success" ? <CheckCircle2 className="w-5 h-5 text-green-500" /> : null}
+            <p className="text-sm font-medium">{toast.message}</p>
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-6">
+          {/* Athlete Name */}
+          <div>
+            <label htmlFor="athleteName" className="block text-sm font-medium text-gray-700">Athlete Name</label>
+            <input
+              type="text"
+              id="athleteName"
+              required
+              value={athleteName}
+              onChange={(e) => setAthleteName(e.target.value)}
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2.5 border"
+              placeholder="e.g. Anton Krupicka"
+            />
+          </div>
+
+          {/* Route Selection */}
+          <div>
+            <label htmlFor="route" className="block text-sm font-medium text-gray-700">Select Route</label>
+            <select
+              id="route"
+              required
+              value={routeId}
+              onChange={(e) => setRouteId(e.target.value)}
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2.5 border bg-white"
+            >
+              <option value="" disabled>Choose a Flatiron route...</option>
+              {routes.map((route) => (
+                <option key={route.id} value={route.id}>
+                  {route.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Date */}
+          <div>
+            <label htmlFor="date" className="block text-sm font-medium text-gray-700">Completion Date</label>
+            <input
+              type="date"
+              id="date"
+              required
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2.5 border"
+            />
+          </div>
+
+          {/* Elapsed Time */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Elapsed Time</label>
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <input
+                  type="number"
+                  min="0"
+                  placeholder="HH"
+                  value={hours}
+                  onChange={(e) => setHours(e.target.value)}
+                  className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2.5 border"
+                />
+              </div>
+              <div>
+                <input
+                  type="number"
+                  min="0"
+                  max="59"
+                  placeholder="MM"
+                  required
+                  value={minutes}
+                  onChange={(e) => setMinutes(e.target.value)}
+                  className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2.5 border"
+                />
+              </div>
+              <div>
+                <input
+                  type="number"
+                  min="0"
+                  max="59"
+                  placeholder="SS"
+                  required
+                  value={seconds}
+                  onChange={(e) => setSeconds(e.target.value)}
+                  className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2.5 border"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* GPX File Upload */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">GPX Track</label>
+            <div className="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-md hover:bg-gray-50 transition-colors relative">
+              <div className="space-y-1 text-center">
+                <UploadCloud className="mx-auto h-12 w-12 text-gray-400" />
+                <div className="flex text-sm text-gray-600 justify-center">
+                  <label htmlFor="gpx-upload" className="relative cursor-pointer bg-transparent rounded-md font-medium text-blue-600 hover:text-blue-500 focus-within:outline-none">
+                    <span>Upload a file</span>
+                    <input
+                      id="gpx-upload"
+                      name="gpx-upload"
+                      type="file"
+                      accept=".gpx"
+                      className="sr-only"
+                      onChange={(e) => setGpxFile(e.target.files?.[0] || null)}
+                    />
+                  </label>
+                  <p className="pl-1">or drag and drop</p>
+                </div>
+                <p className="text-xs text-gray-500">.GPX up to 10MB</p>
+              </div>
+            </div>
+            {gpxFile && (
+              <p className="mt-2 text-sm text-gray-600">
+                Selected: <span className="font-medium text-gray-900">{gpxFile.name}</span>
+              </p>
+            )}
+          </div>
+
+          {/* Submit Button */}
+          <button
+            type="submit"
+            disabled={isLoading}
+            className="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-70 disabled:cursor-not-allowed transition-all"
+          >
+            {isLoading ? (
+              <>
+                <Loader2 className="animate-spin -ml-1 mr-2 h-5 w-5" />
+                Submitting...
+              </>
+            ) : (
+              "Submit FKT"
+            )}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+</file>
+
 <file path="app/layout.tsx">
 import type { Metadata } from 'next';
 import './globals.css'; // Make sure Tailwind styles are loaded
@@ -1971,6 +2119,202 @@ const MapInner = dynamic(() => import('./MapInner'), {
 
 export default function GPXMap({ gpxUrl }: { gpxUrl: string }) {
   return <MapInner gpxUrl={gpxUrl} />;
+}
+</file>
+
+<file path="components/RouteDocViewer.tsx">
+"use client";
+
+import { MessageSquare, MapPin } from "lucide-react";
+
+export default function RouteDocViewer({
+  markdown,
+  activeFeatureId,
+  onSelectFeature,
+}: {
+  markdown: string;
+  activeFeatureId: string | null;
+  onSelectFeature: (id: string) => void;
+}) {
+  const renderInteractiveText = (text: string) => {
+    const lines = text.split("\n");
+
+    return lines.map((line, idx) => {
+      const match = line.match(/\[(.*?)\]\(#(.*?)\)/);
+
+      if (match) {
+        const [full, linkText, featureId] = match;
+        const isActive = activeFeatureId === featureId;
+        const parts = line.split(full);
+
+        return (
+          <p key={idx} className="my-2 leading-relaxed">
+            {parts[0]}
+            <button
+              onClick={() => onSelectFeature(featureId)}
+              className={`inline-flex items-center gap-1 font-mono text-xs font-bold px-2 py-0.5 border transition-all ${
+                isActive
+                  ? "bg-flatiron-gold text-sandstone-950 border-flatiron-gold shadow-lg scale-105"
+                  : "bg-sandstone-900 text-flatiron-ochre border-sandstone-700 hover:border-flatiron-red hover:text-sandstone-100"
+              }`}
+            >
+              <MapPin size={12} /> {linkText}
+            </button>
+            {parts[1]}
+          </p>
+        );
+      }
+
+      if (line.startsWith("# ")) {
+        return <h1 key={idx} className="text-2xl font-serif font-bold text-sandstone-100 mt-6 mb-3 border-b border-sandstone-800 pb-1">{line.replace("# ", "")}</h1>;
+      }
+      if (line.startsWith("## ")) {
+        return <h2 key={idx} className="text-lg font-serif font-bold text-flatiron-ochre mt-4 mb-2">{line.replace("## ", "")}</h2>;
+      }
+
+      return <p key={idx} className="my-2 text-sandstone-200 text-sm leading-relaxed">{line}</p>;
+    });
+  };
+
+  return (
+    <div className="bg-sandstone-900 border-2 border-sandstone-800 p-8 shadow-2xl font-serif space-y-4">
+      <div className="flex items-center justify-between border-b border-sandstone-800 pb-3">
+        <span className="font-mono text-xs text-flatiron-ochre uppercase tracking-widest flex items-center gap-2">
+          <MessageSquare size={14} /> Official Route Specification & Rules Document
+        </span>
+        <span className="font-mono text-[10px] text-sandstone-400">
+          [ Click embedded links to focus map ]
+        </span>
+      </div>
+
+      <div className="prose prose-invert max-w-none font-serif">
+        {renderInteractiveText(markdown)}
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="components/RouteRulesMap.tsx">
+"use client";
+
+import { useEffect, useRef } from "react";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
+
+type GeoJSONFeature = {
+  id: string;
+  properties: {
+    name: string;
+    type: "checkpoint" | "freestyle_zone" | "corridor";
+    radius_meters?: number;
+    sequence_order?: number;
+    description?: string;
+  };
+  geometry: any;
+};
+
+export default function RouteRulesMap({
+  gpxUrl,
+  rulesGeoJSON,
+  activeFeatureId,
+  onSelectFeature,
+}: {
+  gpxUrl?: string;
+  rulesGeoJSON?: { features: GeoJSONFeature[] };
+  activeFeatureId: string | null;
+  onSelectFeature: (id: string) => void;
+}) {
+  const mapRef = useRef<L.Map | null>(null);
+  const layerMapRef = useRef<Map<string, L.Layer>>(new Map());
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!mapContainerRef.current || mapRef.current) return;
+
+    const map = L.map(mapContainerRef.current, {
+      center: [39.9881, -105.2925],
+      zoom: 14,
+      zoomControl: false,
+    });
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "&copy; OpenStreetMap",
+    }).addTo(map);
+
+    mapRef.current = map;
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !rulesGeoJSON?.features) return;
+
+    layerMapRef.current.clear();
+
+    rulesGeoJSON.features.forEach((feature) => {
+      const { id, properties, geometry } = feature;
+
+      if (properties.type === "checkpoint" && geometry.type === "Point") {
+        const [lng, lat] = geometry.coordinates;
+
+        const circle = L.circle([lat, lng], {
+          radius: properties.radius_meters || 15,
+          color: activeFeatureId === id ? "#f59e0b" : "#c04a29",
+          fillColor: activeFeatureId === id ? "#f59e0b" : "#c04a29",
+          fillOpacity: 0.35,
+          weight: activeFeatureId === id ? 3 : 2,
+        }).addTo(map);
+
+        circle.bindTooltip(
+          `<strong>#${properties.sequence_order} ${properties.name}</strong><br/>Radius: ${properties.radius_meters}m`,
+          { className: "font-mono text-xs" }
+        );
+
+        circle.on("click", () => onSelectFeature(id));
+        layerMapRef.current.set(id, circle);
+      } else if (properties.type === "freestyle_zone" && geometry.type === "Polygon") {
+        const polygon = L.geoJSON(geometry, {
+          style: {
+            color: activeFeatureId === id ? "#f59e0b" : "#d97706",
+            fillColor: "#d97706",
+            fillOpacity: 0.15,
+            dashArray: "4, 4",
+          },
+        }).addTo(map);
+
+        polygon.on("click", () => onSelectFeature(id));
+        layerMapRef.current.set(id, polygon);
+      }
+    });
+  }, [rulesGeoJSON, activeFeatureId, onSelectFeature]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !activeFeatureId) return;
+
+    const targetLayer = layerMapRef.current.get(activeFeatureId);
+    if (targetLayer) {
+      if ("getBounds" in targetLayer) {
+        map.fitBounds((targetLayer as L.Polygon).getBounds(), { padding: [50, 50], maxZoom: 16 });
+      } else if ("getLatLng" in targetLayer) {
+        map.setView((targetLayer as L.Circle).getLatLng(), 16, { animate: true });
+      }
+    }
+  }, [activeFeatureId]);
+
+  return (
+    <div className="relative w-full h-[500px] border-2 border-sandstone-800 shadow-2xl">
+      <div ref={mapContainerRef} className="w-full h-full bg-sandstone-950" />
+      <div className="absolute top-3 right-3 bg-sandstone-950/90 border border-sandstone-800 p-2 font-mono text-[10px] text-sandstone-300 z-[1000] space-y-1">
+        <div className="flex items-center gap-2">
+          <span className="w-3 h-3 rounded-full bg-flatiron-red inline-block" /> Required Checkpoint Radius
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="w-3 h-3 border border-dashed border-flatiron-ochre inline-block" /> Freestyle Zone
+        </div>
+      </div>
+    </div>
+  );
 }
 </file>
 
@@ -2216,43 +2560,6 @@ module.exports = {
 }
 </file>
 
-<file path="package.json">
-{
-  "name": "fastest-flatties",
-  "version": "0.1.0",
-  "private": true,
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "sync-leaderboards": "tsx scripts/sync-leaderboards.ts",
-    "lint": "next lint"
-  },
-  "dependencies": {
-    "@supabase/supabase-js": "^2.118.0",
-    "@turf/turf": "^6.5.0",
-    "gpxparser": "^3.0.8",
-    "leaflet": "^1.9.4",
-    "lucide-react": "^1.61.0",
-    "next": "^16.4.3",
-    "node-fetch": "^3.3.2",
-    "react": "^19.3.1",
-    "react-dom": "^19.3.1",
-    "react-leaflet": "^5.0.0"
-  },
-  "devDependencies": {
-    "@types/leaflet": "^1.9.22",
-    "@types/node": "26.6.5",
-    "@types/react": "19.3.0",
-    "autoprefixer": "^10.6.1",
-    "postcss": "^8.5.31",
-    "tailwindcss": "^3.4.19",
-    "tsx": "^4.7.0",
-    "typescript": "7.0.2"
-  }
-}
-</file>
-
 <file path="components/MapInner.tsx">
 "use client";
 
@@ -2338,9 +2645,46 @@ export default function MapInner({ gpxUrl }: MapInnerProps) {
 }
 </file>
 
+<file path="package.json">
+{
+  "name": "fastest-flatties",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "sync-leaderboards": "tsx scripts/sync-leaderboards.ts",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.118.0",
+    "@turf/turf": "^6.5.0",
+    "gpxparser": "^3.0.8",
+    "leaflet": "^1.9.4",
+    "lucide-react": "^1.61.0",
+    "next": "^16.4.3",
+    "node-fetch": "^3.3.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-leaflet": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.22",
+    "@types/node": "26.6.5",
+    "@types/react": "19.3.0",
+    "autoprefixer": "^10.6.1",
+    "postcss": "^8.5.31",
+    "tailwindcss": "^3.4.19",
+    "tsx": "^4.7.0",
+    "typescript": "7.0.2"
+  }
+}
+</file>
+
 <file path="app/page.tsx">
 import { supabase } from "@/lib/supabase";
-import { Mountain, MapPin, TrendingUp, Trophy, ArrowRight } from "lucide-react";
+import { Mountain, MapPin, TrendingUp, Trophy, ArrowRight, UploadCloud } from "lucide-react";
 import Link from "next/link";
 
 export const dynamic = 'force-dynamic';
@@ -2360,9 +2704,18 @@ export default async function HomePage() {
           <span className="font-serif text-xl font-bold text-sandstone-100 flex items-center gap-2 tracking-tight">
             <Mountain size={22} className="text-flatiron-red" /> FASTEST FATTIES
           </span>
-          <span className="font-mono text-xs text-flatiron-ochre uppercase tracking-widest border border-sandstone-800 bg-sandstone-950 px-3 py-1">
-            Boulder Flatiron Records
-          </span>
+          <div className="flex items-center gap-4">
+            <span className="hidden sm:inline-block font-mono text-xs text-flatiron-ochre uppercase tracking-widest border border-sandstone-800 bg-sandstone-950 px-3 py-1">
+              Boulder Flatiron Records
+            </span>
+            <Link 
+              href="/submit" 
+              className="inline-flex items-center gap-2 px-3 py-1.5 bg-flatiron-red text-white font-mono text-xs font-bold uppercase tracking-widest hover:bg-red-800 transition-colors border border-transparent hover:border-sandstone-400"
+            >
+              <UploadCloud size={14} />
+              [ Submit Effort ]
+            </Link>
+          </div>
         </div>
       </div>
 
@@ -2476,8 +2829,6 @@ export default async function HomePage() {
 
 <file path="app/routes/[id]/page.tsx">
 import { supabase } from "@/lib/supabase";
-import GPXMap from "@/components/GPXMap";
-import dynamicImport from "next/dynamic";
 import { 
   Mountain, 
   MapPin, 
@@ -2490,14 +2841,9 @@ import {
   BookOpen
 } from "lucide-react";
 import Link from "next/link";
+import RouteRulesSection from "@/components/RouteRulesSection";
 
 export const dynamic = 'force-dynamic';
-
-// Dynamically import RouteRulesSection with SSR disabled for Leaflet compatibility
-const RouteRulesSection = dynamicImport(
-  () => import("@/components/RouteRulesSection"),
-  { ssr: false }
-);
 
 function formatTimeDiff(seconds: number) {
   const h = Math.floor(seconds / 3600);
@@ -2569,18 +2915,22 @@ export default async function RoutePage({
   }
 
   // Group joint efforts
-  const groupedMap = new Map<string, GroupedEffort>();
-
+  const groupedEfforts: GroupedEffort[] = [];
+  
   if (rawEfforts) {
     rawEfforts.forEach((e) => {
-      const groupKey = `${e.time_seconds}_${e.activity_date}_${(e.category_tags || []).join('-')}`;
-      if (groupedMap.has(groupKey)) {
-        const existing = groupedMap.get(groupKey)!;
-        if (e.athlete && !existing.athletes.some(a => a.id === e.athlete.id)) {
-          existing.athletes.push({ id: e.athlete.id, name: e.athlete.name });
+      const matchingGroup = groupedEfforts.find(group => 
+        group.activity_date === e.activity_date &&
+        JSON.stringify(group.category_tags.sort()) === JSON.stringify((e.category_tags || []).sort()) &&
+        Math.abs(group.time_seconds - e.time_seconds) <= 45
+      );
+      
+      if (matchingGroup) {
+        if (e.athlete && !matchingGroup.athletes.some(a => a.id === e.athlete.id)) {
+          matchingGroup.athletes.push({ id: e.athlete.id, name: e.athlete.name });
         }
       } else {
-        groupedMap.set(groupKey, {
+        groupedEfforts.push({
           id: e.id,
           time_seconds: e.time_seconds,
           formatted_time: e.formatted_time,
@@ -2593,18 +2943,17 @@ export default async function RoutePage({
     });
   }
 
-  const groupedEfforts = Array.from(groupedMap.values());
   const leaderboard = [...groupedEfforts].sort((a, b) => a.time_seconds - b.time_seconds);
 
   // FKT History Calculation with Cross-Support Validation Rule
-  const fastestTimes: Record<string, number> = {}; 
+  const fastestTimes: Record<string, number> = {};
   const recordHistory: GroupedEffort[] = [];
 
   groupedEfforts.forEach((effort) => {
     const isSupported = effort.category_tags.includes("Supported");
     const isUnsupported = effort.category_tags.includes("Unsupported");
 
-    const primaryCat = effort.category_tags.find(t => 
+    const primaryCat = effort.category_tags.find(t =>
       ["Male", "Female", "Non-Binary", "Team"].includes(t)
     ) || "Overall";
 
@@ -2623,7 +2972,7 @@ export default async function RoutePage({
       }
     } else if (isSupported) {
       if (
-        effort.time_seconds < prevSupportedBest && 
+        effort.time_seconds < prevSupportedBest &&
         effort.time_seconds < currentUnsupportedBest
       ) {
         qualifiesAsRecord = true;
@@ -2753,7 +3102,7 @@ export default async function RoutePage({
                             <Link href={`/athletes/${a.id}`} className="hover:text-flatiron-red transition-colors">
                               {a.name}
                             </Link>
-                            {aIdx < effort.athletes.length - 1 && " & "}
+                             {aIdx < effort.athletes.length - 1 && " & "}
                           </span>
                         ))}
                       </td>
@@ -2799,7 +3148,7 @@ export default async function RoutePage({
             <History size={22} className="text-flatiron-ochre" /> Verified FKT Progression History
           </h2>
           <p className="font-mono text-xs text-sandstone-400 mb-4">
-            * Supported attempts only qualify as record-breakers if they surpass the existing Unsupported time for that category.
+            Supported attempts only qualify as record-breakers if they surpass the existing Unsupported time for that category.
           </p>
 
           <div className="bg-sandstone-900 border-2 border-sandstone-800 p-6 shadow-2xl">
@@ -2816,7 +3165,7 @@ export default async function RoutePage({
                             {rec.athletes.map((a, aIdx) => (
                               <span key={a.id}>
                                 {a.name}
-                                {aIdx < rec.athletes.length - 1 && " & "}
+                                 {aIdx < rec.athletes.length - 1 && " & "}
                               </span>
                             ))}
                           </span>

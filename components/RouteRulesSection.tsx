@@ -1,8 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import RouteRulesMap from "@/components/RouteRulesMap";
+import dynamic from "next/dynamic";
 import RouteDocViewer from "@/components/RouteDocViewer";
+
+const RouteRulesMap = dynamic(() => import("./RouteRulesMap"), { 
+  ssr: false,
+  loading: () => (
+    <div className="h-[400px] bg-sandstone-900 border-2 border-sandstone-800 flex flex-col items-center justify-center text-sandstone-400 font-mono text-sm">
+      <span>[ LOADING MAP... ]</span>
+    </div>
+  )
+});
 
 export default function RouteRulesSection({
   gpxUrl,

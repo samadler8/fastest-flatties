@@ -1,6 +1,4 @@
 import { supabase } from "@/lib/supabase";
-import GPXMap from "@/components/GPXMap";
-import dynamicImport from "next/dynamic";
 import { 
   Mountain, 
   MapPin, 
@@ -13,14 +11,9 @@ import {
   BookOpen
 } from "lucide-react";
 import Link from "next/link";
+import RouteRulesSection from "@/components/RouteRulesSection";
 
 export const dynamic = 'force-dynamic';
-
-// Dynamically import RouteRulesSection with SSR disabled for Leaflet compatibility
-const RouteRulesSection = dynamicImport(
-  () => import("@/components/RouteRulesSection"),
-  { ssr: false }
-);
 
 function formatTimeDiff(seconds: number) {
   const h = Math.floor(seconds / 3600);
@@ -92,99 +85,27 @@ export default async function RoutePage({
   }
 
   // Group joint efforts
-  const groupedMap = new Map<string, GroupedEffort>();
-  rawEfforts.forEach((e) => {
-    const matchingGroup = groupedEfforts.find(group => 
-      group.activity_date === e.activity_date &&
-      // Check if category tags match exactly
-      JSON.stringify(group.category_tags.sort()) === JSON.stringify((e.category_tags || []).sort()) &&
-      // Allow a 45-second tolerance for joint FKT finishes
-      Math.abs(group.time_seconds - e.time_seconds) <= 45
-    );
-  if (matchingGroup) {
-    if (e.athlete && !matchingGroup.athletes.some(a => a.id === e.athlete.id)) {
-      matchingGroup.athletes.push({ id: e.athlete.id, name: e.athlete.name });
-    }
-  } else {
-    groupedMap.set(groupKey, {
-    id: e.id,
-    time_seconds: e.time_seconds,
-    formatted_time: e.formatted_time,
-    activity_date: e.activity_date,
-    gpx_url: e.gpx_url,
-    category_tags: e.category_tags || [],
-    athletes: e.athlete ? [{ id: e.athlete.id, name: e.athlete.name }] : []
-    });
-  }
-});
-}
-
-const groupedEfforts = Array.from(groupedMap.values());
-const leaderboard = [...groupedEfforts].sort((a, b) => a.time_seconds - b.time_seconds);
-
-// FKT History Calculation with Cross-Support Validation Rule
-const fastestTimes: Record<string, number> = {};
-const recordHistory: GroupedEffort[] = [];
-
-groupedEfforts.forEach((effort) => {
-  const isSupported = effort.category_tags.includes("Supported");
-  const isUnsupported = effort.category_tags.includes("Unsupported");
-
-  const primaryCat = effort.category_tags.find(t =>
-    ["Male", "Female", "Non-Binary", "Team"].includes(t)
-  ) || "Overall";
-
-  const catSupportedKey = `${primaryCat}_Supported`;
-  const catUnsupportedKey = `${primaryCat}_Unsupported`;
-
-  const prevSupportedBest = fastestTimes[catSupportedKey] || Infinity;
-  const currentUnsupportedBest = fastestTimes[catUnsupportedKey] || Infinity;
-
-  let qualifiesAsRecord = false;
-
-  if (isUnsupported) {
-    if (effort.time_seconds < currentUnsupportedBest) {
-      qualifiesAsRecord = true;
-      fastestTimes[catUnsupportedKey] = effort.time_seconds;
-    }
-  } else if (isSupported) {
-    if (
-      effort.time_seconds < prevSupportedBest &&
-      effort.time_seconds < currentUnsupportedBest
-    ) {
-      qualifiesAsRecord = true;
-      fastestTimes[catSupportedKey] = effort.time_seconds;
-    }
-  } else {
-    const genKey = `${primaryCat}_Overall`;
-    if (effort.time_seconds < (fastestTimes[genKey] || Infinity)) {
-      qualifiesAsRecord = true;
-      fastestTimes[genKey] = effort.time_seconds;
-    }
-  }
-
-  if (qualifiesAsRecord) {
-    recordHistory.push({
-      ...effort,
-      isRecordBreaker: true
-    });
-  }
-});
-
-recordHistory.reverse();
-
-const categoryGroups: CategoryDefinition[] = route.category_definitions || [];
-
-return (
-      matchingGroup.athletes.push({ id: e.athlete.id, name: e.athlete.name });
-    }
-  } else {
-    groupedMap.set(groupKey, {
-      id: e.id,
-      time_seconds: e.time_seconds,
-      formatted_time: e.formatted_time,
-      activity_date: e.activity_date,
-      gpx_url: e.gpx_url,
+  const groupedEfforts: GroupedEffort[] = [];
+  
+  if (rawEfforts) {
+    rawEfforts.forEach((e) => {
+      const matchingGroup = groupedEfforts.find(group => 
+        group.activity_date === e.activity_date &&
+        JSON.stringify(group.category_tags.sort()) === JSON.stringify((e.category_tags || []).sort()) &&
+        Math.abs(group.time_seconds - e.time_seconds) <= 45
+      );
+      
+      if (matchingGroup) {
+        if (e.athlete && !matchingGroup.athletes.some(a => a.id === e.athlete.id)) {
+          matchingGroup.athletes.push({ id: e.athlete.id, name: e.athlete.name });
+        }
+      } else {
+        groupedEfforts.push({
+          id: e.id,
+          time_seconds: e.time_seconds,
+          formatted_time: e.formatted_time,
+          activity_date: e.activity_date,
+          gpx_url: e.gpx_url,
           category_tags: e.category_tags || [],
           athletes: e.athlete ? [{ id: e.athlete.id, name: e.athlete.name }] : []
         });
@@ -192,18 +113,17 @@ return (
     });
   }
 
-  const groupedEfforts = Array.from(groupedMap.values());
   const leaderboard = [...groupedEfforts].sort((a, b) => a.time_seconds - b.time_seconds);
 
   // FKT History Calculation with Cross-Support Validation Rule
-  const fastestTimes: Record<string, number> = {}; 
+  const fastestTimes: Record<string, number> = {};
   const recordHistory: GroupedEffort[] = [];
 
   groupedEfforts.forEach((effort) => {
     const isSupported = effort.category_tags.includes("Supported");
     const isUnsupported = effort.category_tags.includes("Unsupported");
 
-    const primaryCat = effort.category_tags.find(t => 
+    const primaryCat = effort.category_tags.find(t =>
       ["Male", "Female", "Non-Binary", "Team"].includes(t)
     ) || "Overall";
 
@@ -222,7 +142,7 @@ return (
       }
     } else if (isSupported) {
       if (
-        effort.time_seconds < prevSupportedBest && 
+        effort.time_seconds < prevSupportedBest &&
         effort.time_seconds < currentUnsupportedBest
       ) {
         qualifiesAsRecord = true;
@@ -352,7 +272,7 @@ return (
                             <Link href={`/athletes/${a.id}`} className="hover:text-flatiron-red transition-colors">
                               {a.name}
                             </Link>
-                            {aIdx < effort.athletes.length - 1 && " & "}
+                             {aIdx < effort.athletes.length - 1 && " & "}
                           </span>
                         ))}
                       </td>
@@ -398,7 +318,7 @@ return (
             <History size={22} className="text-flatiron-ochre" /> Verified FKT Progression History
           </h2>
           <p className="font-mono text-xs text-sandstone-400 mb-4">
-            * Supported attempts only qualify as record-breakers if they surpass the existing Unsupported time for that category.
+            Supported attempts only qualify as record-breakers if they surpass the existing Unsupported time for that category.
           </p>
 
           <div className="bg-sandstone-900 border-2 border-sandstone-800 p-6 shadow-2xl">
@@ -415,7 +335,7 @@ return (
                             {rec.athletes.map((a, aIdx) => (
                               <span key={a.id}>
                                 {a.name}
-                                {aIdx < rec.athletes.length - 1 && " & "}
+                                 {aIdx < rec.athletes.length - 1 && " & "}
                               </span>
                             ))}
                           </span>
