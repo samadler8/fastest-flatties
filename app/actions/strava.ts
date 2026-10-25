@@ -22,7 +22,11 @@ function distanceMeters(lat1: number, lon1: number, lat2: number, lon2: number):
   return r * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-export async function processStravaActivity(url: string, availableRoutes: RouteEndpoint[]) {
+export async function processStravaActivity(
+  url: string,
+  availableRoutes: RouteEndpoint[],
+  confirmedAthleteName?: string,
+) {
   try {
     const activityId = parseStravaActivityId(url);
     const cookie = process.env.STRAVA_COOKIE;
@@ -33,7 +37,7 @@ export async function processStravaActivity(url: string, availableRoutes: RouteE
       cache: "no-store",
     });
     if (!page.ok) throw new Error(`Strava activity page returned HTTP ${page.status}.`);
-    const { athleteName, activityTitle } = parseStravaMetadata(await page.text());
+    const { athleteName, activityTitle } = parseStravaMetadata(await page.text(), confirmedAthleteName);
     const streams = await fetchActivityStreams(activityId, cookie);
     const elapsedSeconds = streams.time.at(-1)! - streams.time[0];
     if (!Number.isFinite(elapsedSeconds) || elapsedSeconds <= 0) {

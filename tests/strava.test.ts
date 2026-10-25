@@ -41,3 +41,29 @@ test("invalid coordinates cannot be exported", () => {
   assert.throws(() => thinCoordinates([[40, -105], [91, 0]]), /invalid GPS/i);
   assert.throws(() => thinCoordinates([[40, -105]]), /fewer than two/i);
 });
+
+
+test("accepts Strava HTML titles while requiring an identified athlete", () => {
+  assert.deepEqual(
+    parseStravaMetadata("<html><head><title>DEF | Run | Strava</title></head></html>", "Samuel Adler"),
+    { activityTitle: "DEF", athleteName: "Samuel Adler" },
+  );
+  assert.throws(
+    () => parseStravaMetadata("<title>DEF | Run | Strava</title>"),
+    /Enter the athlete name/i,
+  );
+});
+
+test("prefers a scraped athlete over an optional manually entered name", () => {
+  const html = `<meta property="og:title" content="Morning Ride - Jane Runner | Strava">`;
+  assert.deepEqual(parseStravaMetadata(html, "Someone Else"), {
+    activityTitle: "Morning Ride", athleteName: "Jane Runner",
+  });
+});
+
+test("reads an explicit author meta tag with Strava's new title format", () => {
+  assert.deepEqual(
+    parseStravaMetadata(`<title>DEF | Run | Strava</title><meta name="author" content="Jamie Runner">`),
+    { activityTitle: "DEF", athleteName: "Jamie Runner" },
+  );
+});

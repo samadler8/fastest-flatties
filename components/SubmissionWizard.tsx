@@ -18,6 +18,7 @@ export default function SubmissionWizard({
 }) {
   const [step, setStep] = useState<1 | 2>(1); // Reduced from 3 steps to 2
   const [stravaUrl, setStravaUrl] = useState("");
+  const [confirmedAthleteName, setConfirmedAthleteName] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   
   // Auto-populated State
@@ -34,7 +35,8 @@ export default function SubmissionWizard({
       // Pass available routes to the backend for spatial matching
       const result = await processStravaActivity(
         stravaUrl,
-        availableRoutes
+        availableRoutes,
+        confirmedAthleteName
       );
       if (!result.success) throw new Error(result.error);
       
@@ -84,6 +86,7 @@ export default function SubmissionWizard({
   const handleReset = () => {
     setStep(1);
     setStravaUrl("");
+    setConfirmedAthleteName("");
     setArchivedActivity(null);
   };
 
@@ -104,6 +107,24 @@ export default function SubmissionWizard({
             onChange={(e) => setStravaUrl(e.target.value)}
             className="w-full bg-sandstone-950 border border-sandstone-700 p-4 text-sandstone-100 focus:outline-none focus:border-flatiron-red"
           />
+
+          <div className="space-y-2">
+            <label htmlFor="confirmed-athlete-name" className="block text-xs font-mono uppercase text-sandstone-400">
+              Athlete name (optional if Strava provides it)
+            </label>
+            <input
+              id="confirmed-athlete-name"
+              type="text"
+              maxLength={120}
+              placeholder="e.g. Samuel Adler"
+              value={confirmedAthleteName}
+              onChange={(e) => setConfirmedAthleteName(e.target.value)}
+              className="w-full bg-sandstone-950 border border-sandstone-700 p-4 text-sandstone-100 focus:outline-none focus:border-flatiron-red"
+            />
+            <p className="text-sm text-sandstone-400">
+              Strava sometimes omits the athlete from page metadata. If the import asks for a name, enter the activity owner's name here and retry.
+            </p>
+          </div>
 
           <button 
             onClick={handleProcessActivity}

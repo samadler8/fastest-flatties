@@ -31,26 +31,57 @@ function getMeta(html: string, property: string): string | undefined {
   return undefined;
 }
 
-/** Strava currently often uses "Activity title - Athlete | Strava" for og:title. */
-export function parseStravaMetadata(html: string): StravaActivityMetadata {
-  const rawTitle = getMeta(html, "og:title");
+function documentTitle(html: string): string | undefined {
+  const raw = html.match(/<title\b[^>]*>([\s\S]*?)<\/title\s*>/i)?.[1];
+  return raw ? decodeEntities(raw).replace(/\s+/g, " ").trim() : undefined;
+}
+
+/**
+ * Strava now sometimes renders titles like "DEF | Run | Strava" with no og:title.
+ * In this format "Run" is an activity type, NOT an athlete's name.
+ */
+function parseTitle(raw: string): { activityTitle: string; athleteName?: string } {
+  const unbranded = raw.replace(/\s*\|\s*Strava\s*$/i, "").trim();
+  const activityKinds = /\s+\|\s+(?:Run|Ride|Walk|Hike|Swim|Workout|Virtual Ride|Virtual Run|Weight Training|Trail Run|Alpine Ski|Nordic Ski|Backcountry Ski|Snowboard|Yoga|Rowing|Kayaking|Cycling|E-Bike Ride)\s*$/i;
+  const typeStripped = unbranded.replace(activityKinds, "").trim();
+  if (typeStripped !== unbranded) return { activityTitle: typeStripped };
+
+  // Existing Strava/OpenGraph convention: "Activity name - Athlete Name | Strava".
+  const separator = unbranded.lastIndexOf(" - ");
+  if (separator < 0) return { activityTitle: unbranded };
+  return {
+    activityTitle: unbranded.slice(0, separator).trim(),
+    athleteName: unbranded.slice(separator + 3).trim(),
+  };
+}
+
+function validateAthleteName(name: string): string {
+  const trimmed = name.replace(/\s+/g, " ").trim();
+  if (!trimmed || trimmed.length > 120 || /[<>\r\n]/.test(name)) {
+    throw new Error("Invalid athlete name. Please enter a name containing 1–120 characters.");
+  }
+  return trimmed;
+}
+
+/**
+ * When Strava doesn't publish the athlete in its metadata, accept a separately
+ * confirmed athlete name instead of guessing from a generic webpage title.
+ */
+export function parseStravaMetadata(html: string, confirmedAthleteName?: string): StravaActivityMetadata {
+  const rawTitle = getMeta(html, "og:title") ?? documentTitle(html);
   if (!rawTitle) {
-    throw new Error("Strava did not provide an activity title (og:title).");
+    throw new Error("Strava did not provide an activity title (og:title or HTML title).");
   }
-
-  const withoutBrand = rawTitle.replace(/\s*[|]\s*Strava\s*$/i, "").trim();
-  const separator = withoutBrand.lastIndexOf(" - ");
-  const activityTitle = separator >= 0 ? withoutBrand.slice(0, separator).trim() : withoutBrand;
-  const athleteName = separator >= 0
-    ? withoutBrand.slice(separator + 3).trim()
-    : (getMeta(html, "author") ?? "");
-
-  if (!athleteName || !activityTitle) {
-    throw new Error(
-      "Could not reliably determine the athlete's name from Strava. No activity was archived."
-    );
+  const parsed = parseTitle(rawTitle);
+  const activityTitle = parsed.activityTitle;
+  const athleteName = parsed.athleteName || getMeta(html, "author") || confirmedAthleteName?.trim() || "";
+  if (!activityTitle) {
+    throw new Error("Strava activity title was empty.");
   }
-  return { athleteName, activityTitle };
+  if (!athleteName) {
+    throw new Error("Strava provided the activity title but not the athlete name. Enter the athlete name in the optional field and retry.");
+  }
+  return { athleteName: validateAthleteName(athleteName), activityTitle };
 }
 
 export function parseStravaActivityId(rawUrl: string): string {
