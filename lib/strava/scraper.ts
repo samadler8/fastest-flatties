@@ -1,4 +1,6 @@
 import fetch from 'node-fetch';
+import polyline from '@mapbox/polyline';
+import simplify from 'simplify-js';
 
 export interface StravaSegmentEffort {
   activity_id: string;
@@ -6,18 +8,38 @@ export interface StravaSegmentEffort {
   elapsed_time_seconds: number;
 }
 
-export interface ActivityStreams {
-  latlng: [number, number][]; // [lat, lng]
-  time: number[];             // Seconds offset
-  altitude: number[];         // Elevation in meters
+export interface CompressedActivityStream {
+  activity_id: string;
+  encoded_polyline: string;
+}
+
+/**
+ * Compresses a raw Strava latlng stream into a simplified encoded polyline string.
+ * @param latlngs Array of [lat, lng] coordinates from Strava
+ * @param tolerance Simplification tolerance (0.0001 degrees is ~11 meters)
+ */
+export function compressRouteData(latlngs: [number, number][], tolerance = 0.0001): string {
+  // 1. Format for simplify-js { x: lat, y: lng }
+  const points = latlngs.map(coord => ({ x: coord[0], y: coord[1] }));
+  
+  // 2. Simplify the geometry (removes redundant points on straightaways)
+  const simplified = simplify(points, tolerance, true);
+  
+  // 3. Format back to [lat, lng] arrays
+  const reducedCoordinates = simplified.map(p => [p.x, p.y] as [number, number]);
+  
+  // 4. Encode into a compressed string
+  return polyline.encode(reducedCoordinates);
 }
 
 /**
  * Retrieves top efforts from public Strava segment leaderboards.
+ * Note: Ensure you pass a valid Bearer token in your environment for the v3 API.
  */
 export async function fetchSegmentTopEfforts(
   segmentId: string,
-  limit: number = 10
+  limit: number = 10,
+  accessToken: string
 ): Promise<StravaSegmentEffort[]> {
   const url = `https://www.strava.com/api/v3/segments/${segmentId}/leaderboard?page=1&per_page=${limit}`;
 
@@ -25,6 +47,7 @@ export async function fetchSegmentTopEfforts(
     headers: {
       'User-Agent': 'FastestFlattiesScraper/1.0',
       'Accept': 'application/json',
+      'Authorization': `Bearer ${accessToken}`
     },
   });
 
@@ -43,10 +66,12 @@ export async function fetchSegmentTopEfforts(
 }
 
 /**
- * Fetches high-resolution stream arrays from Strava's public activity stream endpoint[cite: 2].
+ * Fetches high-resolution stream arrays from Strava's web endpoint and compresses them.
+ * This returns only what is needed for the database (the encoded polyline).
  */
-export async function fetchActivityStreams(activityId: string): Promise<ActivityStreams> {
-  const streamUrl = `https://www.strava.com/activities/${activityId}/streams?stream_types[]=latlng&stream_types[]=time&stream_types[]=altitude`;[cite: 2]
+export async function fetchAndCompressActivity(activityId: string): Promise<CompressedActivityStream> {
+  // Using the frontend web endpoint to bypass strict API rate limits for streams
+  const streamUrl = `https://www.strava.com/activities/${activityId}/streams?stream_types[]=latlng`;
 
   const response = await fetch(streamUrl, {
     headers: {
@@ -65,9 +90,10 @@ export async function fetchActivityStreams(activityId: string): Promise<Activity
     throw new Error(`Activity ${activityId} stream is missing latlng coordinate data.`);
   }
 
+  const encoded_polyline = compressRouteData(data.latlng);
+
   return {
-    latlng: data.latlng,
-    time: data.time || [],
-    altitude: data.altitude || [],
+    activity_id: activityId,
+    encoded_polyline
   };
 }

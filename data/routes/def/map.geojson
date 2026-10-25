@@ -1,0 +1,48 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "id": "cp-start",
+      "properties": {
+        "name": "Chautauqua Trailhead Sign",
+        "type": "checkpoint",
+        "sequence_order": 1,
+        "radius_meters": 15,
+        "description": "Timing starts when leaving the trailhead."
+      },
+      "geometry": { "type": "Point", "coordinates": [-105.2828, 39.9987] }
+    },
+    {
+      "type": "Feature",
+      "id": "cp-finish",
+      "properties": {
+        "name": "First Flatiron Summit",
+        "type": "checkpoint",
+        "sequence_order": 2,
+        "radius_meters": 10,
+        "description": "Timing stops upon touching the highest point of the summit block."
+      },
+      "geometry": { "type": "Point", "coordinates": [-105.2925, 39.9881] }
+    },
+    {
+      "type": "Feature",
+      "id": "zone-approach",
+      "properties": {
+        "name": "Freestyle Approach Corridor",
+        "type": "freestyle_zone",
+        "description": "Any trail choice is permitted for the approach."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [-105.2810, 39.9995],
+          [-105.2935, 39.9995],
+          [-105.2935, 39.9875],
+          [-105.2810, 39.9875],
+          [-105.2810, 39.9995]
+        ]]
+      }
+    }
+  ]
+}
