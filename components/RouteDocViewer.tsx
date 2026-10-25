@@ -11,12 +11,10 @@ export default function RouteDocViewer({
   activeFeatureId: string | null;
   onSelectFeature: (id: string) => void;
 }) {
-  // Convert custom anchors like [#cp-1] into interactive map triggers
   const renderInteractiveText = (text: string) => {
     const lines = text.split("\n");
 
     return lines.map((line, idx) => {
-      // Intercept anchor links matching #cp-X or #zone-X
       const match = line.match(/\[(.*?)\]\(#(.*?)\)/);
 
       if (match) {
@@ -60,7 +58,7 @@ export default function RouteDocViewer({
           <MessageSquare size={14} /> Official Route Specification & Rules Document
         </span>
         <span className="font-mono text-[10px] text-sandstone-400">
-          [ Click embedded links to highlight on map ]
+          [ Click embedded links to focus map ]
         </span>
       </div>
 

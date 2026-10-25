@@ -68,14 +68,14 @@ export default function SubmitEffortPage() {
 
       // 3. Find or Create Athlete
       let athleteId = "";
-      const { data: existingAthlete, error: athleteLookupError } = await supabase
+      const { data: existingAthletes, error: athleteLookupError } = await supabase
         .from("athletes")
         .select("id")
         .ilike("name", athleteName)
-        .maybeSingle();
+        .limit(1);
 
-      if (existingAthlete) {
-        athleteId = existingAthlete.id;
+      if (existingAthletes && existingAthletes.length > 0) {
+        athleteId = existingAthletes[0].id;
       } else {
         const { data: newAthlete, error: createAthleteError } = await supabase
           .from("athletes")

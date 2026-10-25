@@ -34,7 +34,6 @@ export default function RouteRulesMap({
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
 
-    // Initialize Leaflet Map
     const map = L.map(mapContainerRef.current, {
       center: [39.9881, -105.2925],
       zoom: 14,
@@ -43,13 +42,11 @@ export default function RouteRulesMap({
 
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: "&copy; OpenStreetMap",
-      className: "map-tiles-dark",
     }).addTo(map);
 
     mapRef.current = map;
   }, []);
 
-  // Render Checkpoints, Proximity Radii, and Freestyle Zones
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !rulesGeoJSON?.features) return;
@@ -62,7 +59,6 @@ export default function RouteRulesMap({
       if (properties.type === "checkpoint" && geometry.type === "Point") {
         const [lng, lat] = geometry.coordinates;
 
-        // Proximity Circle (Proximity Radius Rule)
         const circle = L.circle([lat, lng], {
           radius: properties.radius_meters || 15,
           color: activeFeatureId === id ? "#f59e0b" : "#c04a29",
@@ -92,9 +88,8 @@ export default function RouteRulesMap({
         layerMapRef.current.set(id, polygon);
       }
     });
-  }, [rulesGeoJSON, activeFeatureId]);
+  }, [rulesGeoJSON, activeFeatureId, onSelectFeature]);
 
-  // Pan and Zoom Map when a document link is clicked
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !activeFeatureId) return;

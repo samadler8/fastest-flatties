@@ -1,0 +1,21 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Direct East Face Baseline"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-122.4194, 37.7749],
+          [-122.4180, 37.7752],
+          [-122.4165, 37.7760],
+          [-122.4150, 37.7755],
+          [-122.4195, 37.7750]
+        ]
+      }
+    }
+  ]
+}

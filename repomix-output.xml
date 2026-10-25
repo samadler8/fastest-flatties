@@ -1,0 +1,2857 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.github/
+  workflows/
+    deploy_migrations.yml
+app/
+  api/
+    auth/
+      coros/
+        callback/
+          route.ts
+  athletes/
+    [id]/
+      page.tsx
+  routes/
+    [id]/
+      page.tsx
+  submit/
+    page.tsx
+  globals.css
+  layout.tsx
+  page.tsx
+components/
+  CorosConnectButton.tsx
+  GPXMap.tsx
+  MapInner.tsx
+  RouteDocViewer.tsx
+  RouteRulesMap.tsx
+  RouteRulesSection.tsx
+  VerifiedLeaderboard.tsx
+data/
+  routes/
+    geo/
+      def.geojson
+    def.json
+lib/
+  coros/
+    auth.ts
+    scanner.ts
+  geo/
+    matcher.ts
+  strava/
+    scraper.ts
+  supabase.ts
+  verifier.ts
+scripts/
+  sync-leaderboards.ts
+supabase/
+  migrations/
+    20261023000000_initial_schema.sql
+    20261023145100_53classics_20261017.sql
+    20261023145200_DEF_20191010.sql
+    20261023150000_test_pipeline.sql
+    20261023170000_add_effort_categories.sql
+    20261023180000_cleanup_duplicates.sql
+    20261023190000_def_route_rules_and_categories.sql
+    20261023200000_dynamic_route_categories.sql
+    20261023210000_53_classics_categories_and_fkt_rules.sql
+    20261023220000_route_rules_geojson.sql
+    20261025000000_coros_integrations.sql
+types/
+  index.ts
+.gitignore
+package.json
+postcss.config.js
+README.md
+tailwind.config.js
+tsconfig.json
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="app/api/auth/coros/callback/route.ts">
+import { NextRequest, NextResponse } from 'next/server';
+import { exchangeCorosCode } from '@/lib/coros/auth';
+import { supabase } from '@/lib/supabase';
+import { scanAndSyncCorosActivities } from '@/lib/coros/scanner';
+
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const code = searchParams.get('code');
+  const state = searchParams.get('state');
+
+  if (!code || !state) {
+    return NextResponse.json({ error: 'Missing code or state' }, { status: 400 });
+  }
+
+  try {
+    const { athleteId } = JSON.parse(Buffer.from(state, 'base64').toString('ascii'));
+    const tokenData = await exchangeCorosCode(code);
+
+    const expiresAt = new Date(Date.now() + tokenData.expires_in * 1000).toISOString();
+
+    // 1. Save or update integration tokens
+    await supabase.from('athlete_integrations').upsert(
+      {
+        athlete_id: athleteId,
+        provider: 'coros',
+        access_token: tokenData.access_token,
+        refresh_token: tokenData.refresh_token,
+        expires_at: expiresAt,
+        coros_user_id: tokenData.openId,
+      },
+      { onConflict: 'athlete_id,provider' }
+    );
+
+    // 2. Trigger automatic scan of athlete's COROS workouts
+    await scanAndSyncCorosActivities(athleteId, tokenData.access_token);
+
+    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_SITE_URL}/athletes/${athleteId}?coros=connected`);
+  } catch (err: any) {
+    console.error('COROS OAuth Error:', err.message);
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+</file>
+
+<file path="components/CorosConnectButton.tsx">
+"use client";
+
+import { getCorosAuthUrl } from '@/lib/coros/auth';
+import { Cpu } from 'lucide-react';
+
+export default function CorosConnectButton({ athleteId }: { athleteId: string }) {
+  const handleConnect = () => {
+    window.location.href = getCorosAuthUrl(athleteId);
+  };
+
+  return (
+    <button
+      onClick={handleConnect}
+      className="inline-flex items-center gap-2 bg-sandstone-900 border-2 border-flatiron-ochre text-flatiron-ochre hover:bg-flatiron-ochre hover:text-sandstone-950 px-4 py-2 font-mono text-xs uppercase font-bold transition-all shadow-lg"
+    >
+      <Cpu size={14} /> [ Connect COROS Account ]
+    </button>
+  );
+}
+</file>
+
+<file path="components/RouteRulesSection.tsx">
+"use client";
+
+import { useState } from "react";
+import RouteRulesMap from "@/components/RouteRulesMap";
+import RouteDocViewer from "@/components/RouteDocViewer";
+
+export default function RouteRulesSection({
+  gpxUrl,
+  rulesMarkdown,
+  rulesGeoJSON,
+}: {
+  gpxUrl?: string;
+  rulesMarkdown?: string;
+  rulesGeoJSON?: any;
+}) {
+  const [activeFeatureId, setActiveFeatureId] = useState<string | null>(null);
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
+      {/* Specification Document Column */}
+      <div>
+        {rulesMarkdown ? (
+          <RouteDocViewer
+            markdown={rulesMarkdown}
+            activeFeatureId={activeFeatureId}
+            onSelectFeature={(id) => setActiveFeatureId(id)}
+          />
+        ) : (
+          <div className="bg-sandstone-900 border-2 border-sandstone-800 p-6 font-mono text-xs text-sandstone-400">
+            [ NO DETAILED SPECIFICATION DOCUMENT UPLOADED ]
+          </div>
+        )}
+      </div>
+
+      {/* Geofenced Map Column */}
+      <div className="lg:sticky lg:top-20 space-y-2">
+        <RouteRulesMap
+          gpxUrl={gpxUrl}
+          rulesGeoJSON={rulesGeoJSON}
+          activeFeatureId={activeFeatureId}
+          onSelectFeature={(id) => setActiveFeatureId(id)}
+        />
+        {activeFeatureId && (
+          <button
+            onClick={() => setActiveFeatureId(null)}
+            className="font-mono text-xs text-sandstone-400 hover:text-flatiron-red underline w-full text-center"
+          >
+            [ Reset Map View ]
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="components/VerifiedLeaderboard.tsx">
+import * as fs from 'fs';
+import * as path from 'path';
+import { Trophy, Clock, Zap, CheckCircle2 } from 'lucide-react';
+
+interface LeaderboardEntry {
+  rank: number;
+  athleteName: string;
+  activityId: string;
+  elapsedTimeSeconds: number;
+  avgSpeedKmh: number;
+  elevationGainMeters: number;
+  verifiedAt: string;
+}
+
+interface LeaderboardData {
+  routeId: string;
+  lastUpdated: string;
+  leaderboard: LeaderboardEntry[];
+}
+
+function formatDuration(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+export default async function VerifiedLeaderboard({ routeId }: { routeId: string }) {
+  const filePath = path.join(process.cwd(), 'data', 'leaderboards', `${routeId}.json`);
+
+  let leaderboardData: LeaderboardData | null = null;
+  if (fs.existsSync(filePath)) {
+    leaderboardData = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  }
+
+  const entries = leaderboardData?.leaderboard || [];
+
+  return (
+    <div className="bg-sandstone-900 border-2 border-sandstone-800 p-6 shadow-2xl font-serif space-y-4">
+      <div className="flex items-center justify-between border-b border-sandstone-800 pb-3">
+        <h3 className="text-xl font-bold text-sandstone-100 flex items-center gap-2">
+          <Trophy size={20} className="text-flatiron-gold" /> Auto-Verified Strava Leaderboard
+        </h3>
+        {leaderboardData && (
+          <span className="font-mono text-[10px] text-sandstone-400">
+            LAST SYNC: {new Date(leaderboardData.lastUpdated).toLocaleDateString()}
+          </span>
+        )}
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-left font-mono text-xs text-sandstone-200">
+          <thead className="bg-sandstone-950 text-flatiron-ochre uppercase border-b border-sandstone-800">
+            <tr>
+              <th className="px-4 py-3">RANK</th>
+              <th className="px-4 py-3">ATHLETE</th>
+              <th className="px-4 py-3">TIME</th>
+              <th className="px-4 py-3">AVG SPEED</th>
+              <th className="px-4 py-3">ELEV GAIN</th>
+              <th className="px-4 py-3 text-right">VERIFIED</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-sandstone-800">
+            {entries.length > 0 ? (
+              entries.map((entry) => (
+                <tr key={entry.activityId} className="hover:bg-sandstone-800/50 transition-colors">
+                  <td className="px-4 py-3 font-bold text-flatiron-gold">
+                    {entry.rank === 1 ? '01 👑' : `#0${entry.rank}`}
+                  </td>
+                  <td className="px-4 py-3 font-serif text-sm font-bold text-sandstone-100">
+                    <a
+                      href={`https://www.strava.com/activities/${entry.activityId}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="hover:text-flatiron-red underline decoration-sandstone-700 underline-offset-2"
+                    >
+                      {entry.athleteName}
+                    </a>
+                  </td>
+                  <td className="px-4 py-3 font-bold text-flatiron-red flex items-center gap-1">
+                    <Clock size={13} /> {formatDuration(entry.elapsedTimeSeconds)}
+                  </td>
+                  <td className="px-4 py-3">{entry.avgSpeedKmh} km/h</td>
+                  <td className="px-4 py-3">{entry.elevationGainMeters}m</td>
+                  <td className="px-4 py-3 text-right">
+                    <span className="inline-flex items-center gap-1 text-emerald-400 font-bold text-[10px]">
+                      <CheckCircle2 size={12} /> VERIFIED
+                    </span>
+                  </td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={6} className="px-4 py-8 text-center text-sandstone-400 font-mono">
+                  [ NO AUTO-VERIFIED EFFORTS FOUND — RUN `npm run sync-leaderboards` ]
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="data/routes/geo/def.geojson">
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Direct East Face Baseline"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-122.4194, 37.7749],
+          [-122.4180, 37.7752],
+          [-122.4165, 37.7760],
+          [-122.4150, 37.7755],
+          [-122.4195, 37.7750]
+        ]
+      }
+    }
+  ]
+}
+</file>
+
+<file path="data/routes/def.json">
+{
+  "id": "def",
+  "name": "Direct East Face",
+  "stravaSegmentId": "12345678",
+  "targetDistanceKm": 10.0,
+  "maxElevationGainMeters": 15,
+  "startCoordinates": [37.7749, -122.4194],
+  "endCoordinates": [37.7750, -122.4195],
+  "bufferToleranceMeters": 30,
+  "geoJsonPath": "data/routes/geo/def.geojson"
+}
+</file>
+
+<file path="lib/coros/auth.ts">
+const COROS_CLIENT_ID = process.env.COROS_CLIENT_ID!;
+const COROS_CLIENT_SECRET = process.env.COROS_CLIENT_SECRET!;
+const REDIRECT_URI = `${process.env.NEXT_PUBLIC_SITE_URL}/api/auth/coros/callback`;
+
+/**
+ * Returns the authorization URL to redirect users to COROS sign-in
+ */
+export function getCorosAuthUrl(athleteId: string): string {
+  const state = Buffer.from(JSON.stringify({ athleteId })).toString('base64');
+  return `https://open.coros.com/oauth/authorize?client_id=${COROS_CLIENT_ID}&response_type=code&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=${state}`;
+}
+
+/**
+ * Exchanges authorization code for access and refresh tokens
+ */
+export async function exchangeCorosCode(code: string) {
+  const response = await fetch('https://open.coros.com/oauth/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: COROS_CLIENT_ID,
+      client_secret: COROS_CLIENT_SECRET,
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: REDIRECT_URI,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`COROS token exchange failed: ${response.statusText}`);
+  }
+
+  return response.json() as Promise<{
+    access_token: string;
+    refresh_token: string;
+    expires_in: number;
+    openId: string;
+  }>;
+}
+</file>
+
+<file path="lib/coros/scanner.ts">
+import { supabase } from '@/lib/supabase';
+import { extractSubTrack, RouteConfig } from '@/lib/geo/matcher';
+import { verifyAttempt } from '@/lib/verifier';
+import * as turf from '@turf/turf';
+
+export async function scanAndSyncCorosActivities(athleteId: string, accessToken: string) {
+  // 1. Fetch user workouts from COROS Open API
+  const response = await fetch('https://open.coros.com/v2/coros/workout/list?mode=1', {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) throw new Error('Failed to fetch COROS workout list');
+  const data = await response.json();
+  const workouts = data.data?.resultList || [];
+
+  // 2. Fetch all site routes and baseline GeoJSON lines
+  const { data: routes } = await supabase.from('routes').select('*');
+  if (!routes) return;
+
+  for (const workout of workouts) {
+    // Fetch detailed activity streams (lat/lng, altitude, timestamps)
+    const streamRes = await fetch(`https://open.coros.com/v2/coros/workout/detail?labelId=${workout.labelId}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    
+    if (!streamRes.ok) continue;
+    const streamData = await streamRes.json();
+    const points = streamData.data?.points || [];
+
+    if (points.length === 0) continue;
+
+    const streams = {
+      latlng: points.map((p: any) => [p.latitude, p.longitude] as [number, number]),
+      time: points.map((p: any) => p.timestamp),
+      altitude: points.map((p: any) => p.altitude),
+    };
+
+    // 3. Test activity stream against every defined Flatiron route
+    for (const route of routes) {
+      if (!route.rules_geojson?.features?.[0]) continue;
+
+      const lineStringFeature = route.rules_geojson.features[0];
+      const routeConfig: RouteConfig = {
+        id: route.id,
+        targetDistanceKm: (route.distance_miles || 0) * 1.60934,
+        maxElevationGainMeters: 5000,
+        startCoordinates: lineStringFeature.geometry.coordinates[0].slice().reverse(),
+        endCoordinates: lineStringFeature.geometry.coordinates.slice(-1)[0].slice().reverse(),
+        bufferToleranceMeters: 30,
+      };
+
+      // Extract sub-track and verify path integrity (>= 95% inside buffer)
+      const candidate = extractSubTrack(streams, routeConfig, lineStringFeature);
+      const verification = verifyAttempt(candidate, routeConfig);
+
+      if (verification.verified && verification.candidate) {
+        const cand = verification.candidate;
+        const formattedTime = new Date(cand.elapsedTimeSeconds * 1000).toISOString().substring(11, 19);
+        const activityDate = new Date(workout.startTime * 1000).toISOString().split('T')[0];
+
+        // 4. Save verified effort to Supabase
+        await supabase.from('efforts').upsert({
+          route_id: route.id,
+          athlete_id: athleteId,
+          time_seconds: cand.elapsedTimeSeconds,
+          formatted_time: formattedTime,
+          activity_date: activityDate,
+          verified: true,
+          category_tags: ['Male', 'Unsupported'],
+          source: 'COROS',
+        });
+      }
+    }
+  }
+}
+</file>
+
+<file path="lib/geo/matcher.ts">
+import * as turf from '@turf/turf';
+import { ActivityStreams } from '../strava/scraper';
+
+export interface SubTrackCandidate {
+  startIndex: number;
+  endIndex: number;
+  slicedCoordinates: [number, number][]; // [lat, lng]
+  slicedTime: number[];
+  slicedAltitude: number[];
+  elapsedTimeSeconds: number;
+  elevationGainMeters: number;
+  distanceKm: number;
+  bufferMatchRatio: number;
+}
+
+export interface RouteConfig {
+  id: string;
+  targetDistanceKm: number;
+  maxElevationGainMeters: number;
+  startCoordinates: [number, number]; // [lat, lng]
+  endCoordinates: [number, number];   // [lat, lng]
+  bufferToleranceMeters: number;
+}
+
+/**
+ * Scans activity streams for route start/end points and extracts matching sub-tracks.
+ */
+export function extractSubTrack(
+  streams: ActivityStreams,
+  routeConfig: RouteConfig,
+  officialLineStringGeoJSON: turf.Feature<turf.LineString>
+): SubTrackCandidate | null {
+  const { latlng, time, altitude } = streams;
+  const bufferTolerance = routeConfig.bufferToleranceMeters || 30;
+
+  const startPoint = turf.point([routeConfig.startCoordinates[1], routeConfig.startCoordinates[0]]);
+  const endPoint = turf.point([routeConfig.endCoordinates[1], routeConfig.endCoordinates[0]]);
+
+  // 1. Identify Candidate Start & End Point Indices
+  const startIndices: number[] = [];
+  const endIndices: number[] = [];
+
+  for (let i = 0; i < latlng.length; i++) {
+    const pt = turf.point([latlng[i][1], latlng[i][0]]);
+    const distToStart = turf.distance(pt, startPoint, { units: 'meters' });
+    if (distToStart <= bufferTolerance) {
+      startIndices.push(i);
+    }
+  }
+
+  for (let j = 0; j < latlng.length; j++) {
+    const pt = turf.point([latlng[j][1], latlng[j][0]]);
+    const distToEnd = turf.distance(pt, endPoint, { units: 'meters' });
+    if (distToEnd <= bufferTolerance) {
+      endIndices.push(j);
+    }
+  }
+
+  if (startIndices.length === 0 || endIndices.length === 0) {
+    return null; // Route start or end point not reached in activity
+  }
+
+  // 2. Build 30-meter Buffer Polygon around the baseline route
+  const routeBufferPolygon = turf.buffer(officialLineStringGeoJSON, 0.03, { units: 'kilometers' });[cite: 1]
+
+  let bestCandidate: SubTrackCandidate | null = null;
+
+  // 3. Evaluate Candidate Start/End Index Pairs (i, j)
+  for (const i of startIndices) {
+    for (const j of endIndices) {
+      if (j <= i + 5) continue; // Ensure a minimal valid sub-track duration
+
+      const slicedLatlng = latlng.slice(i, j + 1);
+      const slicedTime = time.slice(i, j + 1);
+      const slicedAltitude = altitude.slice(i, j + 1);
+
+      // Verify Buffer Coverage (>= 95% of points must lie inside route buffer)
+      let insideCount = 0;
+      slicedLatlng.forEach(([lat, lng]) => {
+        const p = turf.point([lng, lat]);
+        if (turf.booleanPointInPolygon(p, routeBufferPolygon)) {[cite: 1]
+          insideCount++;
+        }
+      });
+
+      const bufferMatchRatio = insideCount / slicedLatlng.length;
+
+      // 4. Compute Sub-Track Metrics
+      const elapsedTimeSeconds = slicedTime[slicedTime.length - 1] - slicedTime[0];[cite: 1]
+
+      let elevationGainMeters = 0;
+      for (let k = 1; k < slicedAltitude.length; k++) {
+        const diff = slicedAltitude[k] - slicedAltitude[k - 1];
+        if (diff > 0) elevationGainMeters += diff;[cite: 1]
+      }
+
+      // GeoJSON LineString coordinates use [lng, lat]
+      const geoJsonCoords = slicedLatlng.map(([lat, lng]) => [lng, lat]);
+      const slicedLine = turf.lineString(geoJsonCoords);
+      const distanceKm = turf.length(slicedLine, { units: 'kilometers' });
+
+      const candidate: SubTrackCandidate = {
+        startIndex: i,
+        endIndex: j,
+        slicedCoordinates: slicedLatlng,
+        slicedTime,
+        slicedAltitude,
+        elapsedTimeSeconds,
+        elevationGainMeters: Math.round(elevationGainMeters),
+        distanceKm: parseFloat(distanceKm.toFixed(2)),
+        bufferMatchRatio,
+      };
+
+      // Select candidate with the best buffer match ratio and fastest elapsed time
+      if (!bestCandidate || (candidate.bufferMatchRatio >= 0.95 && candidate.elapsedTimeSeconds < bestCandidate.elapsedTimeSeconds)) {
+        bestCandidate = candidate;
+      }
+    }
+  }
+
+  return bestCandidate;
+}
+</file>
+
+<file path="lib/strava/scraper.ts">
+import fetch from 'node-fetch';
+
+export interface StravaSegmentEffort {
+  activity_id: string;
+  athlete_name: string;
+  elapsed_time_seconds: number;
+}
+
+export interface ActivityStreams {
+  latlng: [number, number][]; // [lat, lng]
+  time: number[];             // Seconds offset
+  altitude: number[];         // Elevation in meters
+}
+
+/**
+ * Retrieves top efforts from public Strava segment leaderboards.
+ */
+export async function fetchSegmentTopEfforts(
+  segmentId: string,
+  limit: number = 10
+): Promise<StravaSegmentEffort[]> {
+  const url = `https://www.strava.com/api/v3/segments/${segmentId}/leaderboard?page=1&per_page=${limit}`;
+
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': 'FastestFlattiesScraper/1.0',
+      'Accept': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch segment leaderboard ${segmentId}: ${response.statusText}`);
+  }
+
+  const data = (await response.json()) as any;
+  const entries = data.entries || [];
+
+  return entries.map((entry: any) => ({
+    activity_id: String(entry.activity_id),
+    athlete_name: `${entry.athlete_firstname} ${entry.athlete_lastname}`.trim(),
+    elapsed_time_seconds: entry.elapsed_time,
+  }));
+}
+
+/**
+ * Fetches high-resolution stream arrays from Strava's public activity stream endpoint[cite: 2].
+ */
+export async function fetchActivityStreams(activityId: string): Promise<ActivityStreams> {
+  const streamUrl = `https://www.strava.com/activities/${activityId}/streams?stream_types[]=latlng&stream_types[]=time&stream_types[]=altitude`;[cite: 2]
+
+  const response = await fetch(streamUrl, {
+    headers: {
+      'User-Agent': 'FastestFlattiesScraper/1.0',
+      'Accept': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch streams for activity ${activityId}: ${response.statusText}`);
+  }
+
+  const data = (await response.json()) as any;
+
+  if (!data.latlng || !Array.isArray(data.latlng)) {
+    throw new Error(`Activity ${activityId} stream is missing latlng coordinate data.`);
+  }
+
+  return {
+    latlng: data.latlng,
+    time: data.time || [],
+    altitude: data.altitude || [],
+  };
+}
+</file>
+
+<file path="lib/verifier.ts">
+import { SubTrackCandidate, RouteConfig } from './geo/matcher';
+
+export interface VerificationResult {
+  verified: boolean;
+  reason?: string;
+  candidate?: SubTrackCandidate;
+}
+
+/**
+ * Validates a sliced sub-track attempt against strict completion rules.
+ */
+export function verifyAttempt(
+  candidate: SubTrackCandidate | null,
+  routeConfig: RouteConfig
+): VerificationResult {
+  if (!candidate) {
+    return {
+      verified: false,
+      reason: 'No matching sub-track found passing through both start and end coordinates.',
+    };
+  }
+
+  // Rule 1: Spatial Path Integrity (>= 95% inside buffer)
+  if (candidate.bufferMatchRatio < 0.95) {[cite: 1]
+    return {
+      verified: false,
+      reason: `Path integrity failed: Only ${(candidate.bufferMatchRatio * 100).toFixed(1)}% of coordinates aligned with route buffer (Required >= 95%).`,
+      candidate,
+    };
+  }
+
+  // Rule 2: Elevation Gain Cap
+  if (routeConfig.maxElevationGainMeters !== undefined && candidate.elevationGainMeters > routeConfig.maxElevationGainMeters) {[cite: 1]
+    return {
+      verified: false,
+      reason: `Elevation gain limit exceeded: ${candidate.elevationGainMeters}m recorded (Max allowed: ${routeConfig.maxElevationGainMeters}m).`,[cite: 1]
+      candidate,
+    };
+  }
+
+  // Rule 3: Target Distance Tolerance (±3%)
+  const minDistanceKm = routeConfig.targetDistanceKm * 0.97;
+  const maxDistanceKm = routeConfig.targetDistanceKm * 1.03;
+
+  if (candidate.distanceKm < minDistanceKm || candidate.distanceKm > maxDistanceKm) {
+    return {
+      verified: false,
+      reason: `Distance tolerance failed: ${candidate.distanceKm}km recorded (Target: ${routeConfig.targetDistanceKm}km ±3%).`,
+      candidate,
+    };
+  }
+
+  return {
+    verified: true,
+    candidate,
+  };
+}
+</file>
+
+<file path="scripts/sync-leaderboards.ts">
+import * as fs from 'fs';
+import * as path from 'path';
+import * as turf from '@turf/turf';
+import { fetchSegmentTopEfforts, fetchActivityStreams } from '../lib/strava/scraper';
+import { extractSubTrack, RouteConfig } from '../lib/geo/matcher';
+import { verifyAttempt } from '../lib/verifier';
+
+export interface LeaderboardEntry {
+  rank: number;
+  athleteName: string;
+  activityId: string;
+  elapsedTimeSeconds: number;
+  avgSpeedKmh: number;
+  elevationGainMeters: number;
+  verifiedAt: string;
+}
+
+async function syncLeaderboards() {
+  const routesDir = path.join(process.cwd(), 'data', 'routes');
+  const leaderboardsDir = path.join(process.cwd(), 'data', 'leaderboards');
+
+  if (!fs.existsSync(leaderboardsDir)) {
+    fs.mkdirSync(leaderboardsDir, { recursive: true });
+  }
+
+  const files = fs.readdirSync(routesDir).filter((file) => file.endsWith('.json'));
+
+  console.log(`🔍 Found ${files.length} route definitions to process...`);
+
+  for (const file of files) {
+    const routeFilePath = path.join(routesDir, file);
+    const routeConfig: RouteConfig = JSON.parse(fs.readFileSync(routeFilePath, 'utf-8'));
+
+    console.log(`\n--------------------------------------------------`);
+    console.log(`Processing Route: ${routeConfig.id} (${routeConfig.name})`);
+
+    // Load GeoJSON LineString
+    const geoJsonPath = path.join(process.cwd(), routeConfig.geoJsonPath || `data/routes/geo/${routeConfig.id}.geojson`);
+    if (!fs.existsSync(geoJsonPath)) {
+      console.warn(`⚠️ GeoJSON baseline file missing for route ${routeConfig.id} at ${geoJsonPath}`);
+      continue;
+    }
+
+    const geoJsonRaw = JSON.parse(fs.readFileSync(geoJsonPath, 'utf-8'));
+    const lineStringFeature = geoJsonRaw.type === 'FeatureCollection'
+      ? geoJsonRaw.features[0]
+      : geoJsonRaw;
+
+    // 1. Fetch Top Segment Efforts
+    console.log(`Fetching top segment efforts for Strava Segment ${routeConfig.stravaSegmentId}...`);
+    let efforts = [];
+    try {
+      efforts = await fetchSegmentTopEfforts(routeConfig.stravaSegmentId, 10);
+    } catch (err: any) {
+      console.error(`❌ Failed to fetch segment efforts: ${err.message}`);
+      continue;
+    }
+
+    const verifiedEntries: Omit<LeaderboardEntry, 'rank'>[] = [];
+
+    // 2. Verify Activity Streams
+    for (const effort of efforts) {
+      console.log(` Checking Activity ${effort.activity_id} (${effort.athlete_name})...`);
+
+      try {
+        const streams = await fetchActivityStreams(effort.activity_id);
+        const candidate = extractSubTrack(streams, routeConfig, lineStringFeature);
+        const verification = verifyAttempt(candidate, routeConfig);
+
+        if (verification.verified && verification.candidate) {
+          const cand = verification.candidate;
+          const avgSpeedKmh = parseFloat((cand.distanceKm / (cand.elapsedTimeSeconds / 3600)).toFixed(2));
+
+          console.log(`   ✅ Verified! Time: ${cand.elapsedTimeSeconds}s | Speed: ${avgSpeedKmh} km/h`);
+
+          verifiedEntries.push({
+            athleteName: effort.athlete_name,
+            activityId: effort.activity_id,
+            elapsedTimeSeconds: cand.elapsedTimeSeconds,
+            avgSpeedKmh,
+            elevationGainMeters: cand.elevationGainMeters,
+            verifiedAt: new Date().toISOString(),
+          });
+        } else {
+          console.log(`   ❌ Rejected: ${verification.reason}`);
+        }
+      } catch (err: any) {
+        console.error(`   ⚠️ Stream fetch/processing error: ${err.message}`);
+      }
+    }
+
+    // 3. Sort & Assign Ranks
+    verifiedEntries.sort((a, b) => a.elapsedTimeSeconds - b.elapsedTimeSeconds);
+
+    const rankedLeaderboard: LeaderboardEntry[] = verifiedEntries.map((entry, index) => ({
+      rank: index + 1,
+      ...entry,
+    }));
+
+    // 4. Save Leaderboard JSON
+    const leaderboardPayload = {
+      routeId: routeConfig.id,
+      lastUpdated: new Date().toISOString(),
+      leaderboard: rankedLeaderboard,
+    };
+
+    const targetLeaderboardPath = path.join(leaderboardsDir, `${routeConfig.id}.json`);
+    fs.writeFileSync(targetLeaderboardPath, JSON.stringify(leaderboardPayload, null, 2));
+
+    console.log(`🎉 Saved ${rankedLeaderboard.length} verified efforts to ${targetLeaderboardPath}`);
+  }
+}
+
+syncLeaderboards().catch((err) => {
+  console.error('Unhandled error during sync:', err);
+  process.exit(1);
+});
+</file>
+
+<file path="supabase/migrations/20261025000000_coros_integrations.sql">
+-- Store athlete API tokens securely
+CREATE TABLE IF NOT EXISTS athlete_integrations (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  athlete_id UUID NOT NULL REFERENCES athletes(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL CHECK (provider IN ('coros', 'strava', 'garmin')),
+  access_token TEXT NOT NULL,
+  refresh_token TEXT,
+  expires_at TIMESTAMPTZ,
+  coros_user_id TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT unique_athlete_provider UNIQUE (athlete_id, provider)
+);
+
+-- Add source column to efforts to trace origins
+ALTER TABLE efforts 
+ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'Manual Submission' CHECK (source IN ('Manual Submission', 'Strava', 'COROS'));
+</file>
+
+<file path="app/submit/page.tsx">
+"use client";
+
+import { useState, useEffect } from "react";
+import { supabase } from "@/lib/supabase";
+import { Route } from "@/types";
+import { CheckCircle2, UploadCloud, Loader2 } from "lucide-react";
+
+export default function SubmitEffortPage() {
+  const [routes, setRoutes] = useState<Route[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+
+  // Form State
+  const [athleteName, setAthleteName] = useState("");
+  const [routeId, setRouteId] = useState("");
+  const [date, setDate] = useState("");
+  const [hours, setHours] = useState("");
+  const [minutes, setMinutes] = useState("");
+  const [seconds, setSeconds] = useState("");
+  const [gpxFile, setGpxFile] = useState<File | null>(null);
+
+  // Fetch routes for the dropdown on mount
+  useEffect(() => {
+    async function fetchRoutes() {
+      const { data, error } = await supabase.from("routes").select("*").order("name");
+      if (data) setRoutes(data);
+      if (error) console.error("Error fetching routes:", error);
+    }
+    fetchRoutes();
+  }, []);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setToast(null);
+
+    try {
+      if (!gpxFile) throw new Error("Please upload a GPX file.");
+      if (!routeId) throw new Error("Please select a route.");
+      if (!athleteName) throw new Error("Please enter your name.");
+
+      // 1. Calculate time
+      const hrs = parseInt(hours || "0", 10);
+      const mins = parseInt(minutes || "0", 10);
+      const secs = parseInt(seconds || "0", 10);
+      const totalSeconds = hrs * 3600 + mins * 60 + secs;
+      
+      const formattedTime = [
+        hrs > 0 ? hrs.toString() : null,
+        hrs > 0 ? mins.toString().padStart(2, "0") : mins.toString(),
+        secs.toString().padStart(2, "0"),
+      ].filter(Boolean).join(":");
+
+      // 2. Upload GPX File to Supabase Storage
+      const fileExt = gpxFile.name.split('.').pop();
+      const fileName = `${Date.now()}-${Math.random().toString(36).substring(2)}.${fileExt}`;
+      const filePath = `${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("gpx-files")
+        .upload(filePath, gpxFile);
+
+      if (uploadError) throw new Error("Failed to upload GPX file.");
+
+      const { data: { publicUrl } } = supabase.storage
+        .from("gpx-files")
+        .getPublicUrl(filePath);
+
+      // 3. Find or Create Athlete
+      let athleteId = "";
+      const { data: existingAthlete, error: athleteLookupError } = await supabase
+        .from("athletes")
+        .select("id")
+        .ilike("name", athleteName)
+        .maybeSingle();
+
+      if (existingAthlete) {
+        athleteId = existingAthlete.id;
+      } else {
+        const { data: newAthlete, error: createAthleteError } = await supabase
+          .from("athletes")
+          .insert({ name: athleteName })
+          .select("id")
+          .single();
+          
+        if (createAthleteError) throw new Error("Failed to create athlete record.");
+        athleteId = newAthlete.id;
+      }
+
+      // 4. Insert Effort
+      const { error: effortError } = await supabase.from("efforts").insert({
+        route_id: routeId,
+        athlete_id: athleteId,
+        time_seconds: totalSeconds,
+        formatted_time: formattedTime,
+        activity_date: date,
+        gpx_url: publicUrl,
+        verified: false, // Default to unverified pending admin approval
+      });
+
+      if (effortError) throw new Error("Failed to submit effort.");
+
+      // Success Reset
+      setToast({ message: "Effort submitted successfully! Pending verification.", type: "success" });
+      setAthleteName("");
+      setRouteId("");
+      setDate("");
+      setHours("");
+      setMinutes("");
+      setSeconds("");
+      setGpxFile(null);
+      
+    } catch (error: any) {
+      setToast({ message: error.message || "An unexpected error occurred.", type: "error" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-xl mx-auto bg-white rounded-xl shadow-sm border border-gray-100 p-8">
+        <div className="text-center mb-8">
+          <h1 className="text-3xl font-bold text-gray-900">Submit a Time</h1>
+          <p className="text-gray-500 mt-2">Upload your GPX file to claim your spot on the leaderboard.</p>
+        </div>
+
+        {toast && (
+          <div className={`mb-6 p-4 rounded-md flex items-center gap-3 ${toast.type === "success" ? "bg-green-50 text-green-800" : "bg-red-50 text-red-800"}`}>
+            {toast.type === "success" ? <CheckCircle2 className="w-5 h-5 text-green-500" /> : null}
+            <p className="text-sm font-medium">{toast.message}</p>
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-6">
+          {/* Athlete Name */}
+          <div>
+            <label htmlFor="athleteName" className="block text-sm font-medium text-gray-700">Athlete Name</label>
+            <input
+              type="text"
+              id="athleteName"
+              required
+              value={athleteName}
+              onChange={(e) => setAthleteName(e.target.value)}
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2.5 border"
+              placeholder="e.g. Anton Krupicka"
+            />
+          </div>
+
+          {/* Route Selection */}
+          <div>
+            <label htmlFor="route" className="block text-sm font-medium text-gray-700">Select Route</label>
+            <select
+              id="route"
+              required
+              value={routeId}
+              onChange={(e) => setRouteId(e.target.value)}
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2.5 border bg-white"
+            >
+              <option value="" disabled>Choose a Flatiron route...</option>
+              {routes.map((route) => (
+                <option key={route.id} value={route.id}>
+                  {route.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Date */}
+          <div>
+            <label htmlFor="date" className="block text-sm font-medium text-gray-700">Completion Date</label>
+            <input
+              type="date"
+              id="date"
+              required
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2.5 border"
+            />
+          </div>
+
+          {/* Elapsed Time */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Elapsed Time</label>
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <input
+                  type="number"
+                  min="0"
+                  placeholder="HH"
+                  value={hours}
+                  onChange={(e) => setHours(e.target.value)}
+                  className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2.5 border"
+                />
+              </div>
+              <div>
+                <input
+                  type="number"
+                  min="0"
+                  max="59"
+                  placeholder="MM"
+                  required
+                  value={minutes}
+                  onChange={(e) => setMinutes(e.target.value)}
+                  className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2.5 border"
+                />
+              </div>
+              <div>
+                <input
+                  type="number"
+                  min="0"
+                  max="59"
+                  placeholder="SS"
+                  required
+                  value={seconds}
+                  onChange={(e) => setSeconds(e.target.value)}
+                  className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2.5 border"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* GPX File Upload */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">GPX Track</label>
+            <div className="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-md hover:bg-gray-50 transition-colors relative">
+              <div className="space-y-1 text-center">
+                <UploadCloud className="mx-auto h-12 w-12 text-gray-400" />
+                <div className="flex text-sm text-gray-600 justify-center">
+                  <label htmlFor="gpx-upload" className="relative cursor-pointer bg-transparent rounded-md font-medium text-blue-600 hover:text-blue-500 focus-within:outline-none">
+                    <span>Upload a file</span>
+                    <input
+                      id="gpx-upload"
+                      name="gpx-upload"
+                      type="file"
+                      accept=".gpx"
+                      className="sr-only"
+                      onChange={(e) => setGpxFile(e.target.files?.[0] || null)}
+                    />
+                  </label>
+                  <p className="pl-1">or drag and drop</p>
+                </div>
+                <p className="text-xs text-gray-500">.GPX up to 10MB</p>
+              </div>
+            </div>
+            {gpxFile && (
+              <p className="mt-2 text-sm text-gray-600">
+                Selected: <span className="font-medium text-gray-900">{gpxFile.name}</span>
+              </p>
+            )}
+          </div>
+
+          {/* Submit Button */}
+          <button
+            type="submit"
+            disabled={isLoading}
+            className="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-70 disabled:cursor-not-allowed transition-all"
+          >
+            {isLoading ? (
+              <>
+                <Loader2 className="animate-spin -ml-1 mr-2 h-5 w-5" />
+                Submitting...
+              </>
+            ) : (
+              "Submit FKT"
+            )}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="components/RouteDocViewer.tsx">
+"use client";
+
+import { MessageSquare, MapPin } from "lucide-react";
+
+export default function RouteDocViewer({
+  markdown,
+  activeFeatureId,
+  onSelectFeature,
+}: {
+  markdown: string;
+  activeFeatureId: string | null;
+  onSelectFeature: (id: string) => void;
+}) {
+  const renderInteractiveText = (text: string) => {
+    const lines = text.split("\n");
+
+    return lines.map((line, idx) => {
+      const match = line.match(/\[(.*?)\]\(#(.*?)\)/);
+
+      if (match) {
+        const [full, linkText, featureId] = match;
+        const isActive = activeFeatureId === featureId;
+        const parts = line.split(full);
+
+        return (
+          <p key={idx} className="my-2 leading-relaxed">
+            {parts[0]}
+            <button
+              onClick={() => onSelectFeature(featureId)}
+              className={`inline-flex items-center gap-1 font-mono text-xs font-bold px-2 py-0.5 border transition-all ${
+                isActive
+                  ? "bg-flatiron-gold text-sandstone-950 border-flatiron-gold shadow-lg scale-105"
+                  : "bg-sandstone-900 text-flatiron-ochre border-sandstone-700 hover:border-flatiron-red hover:text-sandstone-100"
+              }`}
+            >
+              <MapPin size={12} /> {linkText}
+            </button>
+            {parts[1]}
+          </p>
+        );
+      }
+
+      if (line.startsWith("# ")) {
+        return <h1 key={idx} className="text-2xl font-serif font-bold text-sandstone-100 mt-6 mb-3 border-b border-sandstone-800 pb-1">{line.replace("# ", "")}</h1>;
+      }
+      if (line.startsWith("## ")) {
+        return <h2 key={idx} className="text-lg font-serif font-bold text-flatiron-ochre mt-4 mb-2">{line.replace("## ", "")}</h2>;
+      }
+
+      return <p key={idx} className="my-2 text-sandstone-200 text-sm leading-relaxed">{line}</p>;
+    });
+  };
+
+  return (
+    <div className="bg-sandstone-900 border-2 border-sandstone-800 p-8 shadow-2xl font-serif space-y-4">
+      <div className="flex items-center justify-between border-b border-sandstone-800 pb-3">
+        <span className="font-mono text-xs text-flatiron-ochre uppercase tracking-widest flex items-center gap-2">
+          <MessageSquare size={14} /> Official Route Specification & Rules Document
+        </span>
+        <span className="font-mono text-[10px] text-sandstone-400">
+          [ Click embedded links to focus map ]
+        </span>
+      </div>
+
+      <div className="prose prose-invert max-w-none font-serif">
+        {renderInteractiveText(markdown)}
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="components/RouteRulesMap.tsx">
+"use client";
+
+import { useEffect, useRef } from "react";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
+
+type GeoJSONFeature = {
+  id: string;
+  properties: {
+    name: string;
+    type: "checkpoint" | "freestyle_zone" | "corridor";
+    radius_meters?: number;
+    sequence_order?: number;
+    description?: string;
+  };
+  geometry: any;
+};
+
+export default function RouteRulesMap({
+  gpxUrl,
+  rulesGeoJSON,
+  activeFeatureId,
+  onSelectFeature,
+}: {
+  gpxUrl?: string;
+  rulesGeoJSON?: { features: GeoJSONFeature[] };
+  activeFeatureId: string | null;
+  onSelectFeature: (id: string) => void;
+}) {
+  const mapRef = useRef<L.Map | null>(null);
+  const layerMapRef = useRef<Map<string, L.Layer>>(new Map());
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!mapContainerRef.current || mapRef.current) return;
+
+    const map = L.map(mapContainerRef.current, {
+      center: [39.9881, -105.2925],
+      zoom: 14,
+      zoomControl: false,
+    });
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "&copy; OpenStreetMap",
+    }).addTo(map);
+
+    mapRef.current = map;
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !rulesGeoJSON?.features) return;
+
+    layerMapRef.current.clear();
+
+    rulesGeoJSON.features.forEach((feature) => {
+      const { id, properties, geometry } = feature;
+
+      if (properties.type === "checkpoint" && geometry.type === "Point") {
+        const [lng, lat] = geometry.coordinates;
+
+        const circle = L.circle([lat, lng], {
+          radius: properties.radius_meters || 15,
+          color: activeFeatureId === id ? "#f59e0b" : "#c04a29",
+          fillColor: activeFeatureId === id ? "#f59e0b" : "#c04a29",
+          fillOpacity: 0.35,
+          weight: activeFeatureId === id ? 3 : 2,
+        }).addTo(map);
+
+        circle.bindTooltip(
+          `<strong>#${properties.sequence_order} ${properties.name}</strong><br/>Radius: ${properties.radius_meters}m`,
+          { className: "font-mono text-xs" }
+        );
+
+        circle.on("click", () => onSelectFeature(id));
+        layerMapRef.current.set(id, circle);
+      } else if (properties.type === "freestyle_zone" && geometry.type === "Polygon") {
+        const polygon = L.geoJSON(geometry, {
+          style: {
+            color: activeFeatureId === id ? "#f59e0b" : "#d97706",
+            fillColor: "#d97706",
+            fillOpacity: 0.15,
+            dashArray: "4, 4",
+          },
+        }).addTo(map);
+
+        polygon.on("click", () => onSelectFeature(id));
+        layerMapRef.current.set(id, polygon);
+      }
+    });
+  }, [rulesGeoJSON, activeFeatureId, onSelectFeature]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !activeFeatureId) return;
+
+    const targetLayer = layerMapRef.current.get(activeFeatureId);
+    if (targetLayer) {
+      if ("getBounds" in targetLayer) {
+        map.fitBounds((targetLayer as L.Polygon).getBounds(), { padding: [50, 50], maxZoom: 16 });
+      } else if ("getLatLng" in targetLayer) {
+        map.setView((targetLayer as L.Circle).getLatLng(), 16, { animate: true });
+      }
+    }
+  }, [activeFeatureId]);
+
+  return (
+    <div className="relative w-full h-[500px] border-2 border-sandstone-800 shadow-2xl">
+      <div ref={mapContainerRef} className="w-full h-full bg-sandstone-950" />
+      <div className="absolute top-3 right-3 bg-sandstone-950/90 border border-sandstone-800 p-2 font-mono text-[10px] text-sandstone-300 z-[1000] space-y-1">
+        <div className="flex items-center gap-2">
+          <span className="w-3 h-3 rounded-full bg-flatiron-red inline-block" /> Required Checkpoint Radius
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="w-3 h-3 border border-dashed border-flatiron-ochre inline-block" /> Freestyle Zone
+        </div>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="lib/supabase.ts">
+import { createClient } from '@supabase/supabase-js';
+import { Database } from './types'; // Optional: if you generate types using Supabase CLI
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  throw new Error('Missing Supabase environment variables. Please check your .env.local file.');
+}
+
+// Create a single supabase client for interacting with your database
+export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+</file>
+
+<file path="supabase/migrations/20261023145200_DEF_20191010.sql">
+-- Insert Initial Athletes
+INSERT INTO athletes (id, name, instagram)
+VALUES ('a1111111-1111-1111-1111-111111111111', 'Kyle Richardson', '@kylerichardson')
+ON CONFLICT (id) DO NOTHING;
+
+-- Insert First Flatiron DEF Route
+INSERT INTO routes (id, name, description, distance_miles, elevation_gain_ft, gpx_url, start_finish, rules, photos)
+VALUES (
+  'f1111111-1111-1111-1111-111111111111',
+  'First Flatiron - Direct East Face (DEF)',
+  'The iconic Direct East Face scramble from Chautauqua trailhead to the summit block of the First Flatiron.',
+  2.4,
+  1400,
+  'https://gxoxxbzoykhvjgkbiuwx.supabase.co/storage/v1/object/public/gpx-files/DEF_%202019-10-15.gpx',
+  'Starts at the Chautauqua Trailhead sign and ends upon touching the highest point of the First Flatiron summit block.',
+  '• Human-powered only from trailhead to summit.
+• Free solo or roped scrambling permitted.
+• Timing begins at the Chautauqua trailhead sign.
+• Timing stops when touching the highest point of the summit block.',
+  ARRAY[
+    'https://images.unsplash.com/photo-1598974609653-53d719597274?auto=format&fit=crop&q=80&w=1200'
+  ]
+)
+ON CONFLICT (id) DO NOTHING;
+
+-- Insert Kyle Richardson's 30:19 Effort
+INSERT INTO efforts (route_id, athlete_id, time_seconds, formatted_time, activity_date, gpx_url, verified)
+VALUES (
+  'f1111111-1111-1111-1111-111111111111',
+  'a1111111-1111-1111-1111-111111111111',
+  1819,
+  '30:19',
+  '2019-10-15',
+  'https://gxoxxbzoykhvjgkbiuwx.supabase.co/storage/v1/object/public/gpx-files/DEF_%202019-10-15.gpx',
+  TRUE
+)
+ON CONFLICT (id) DO NOTHING;
+</file>
+
+<file path="supabase/migrations/20261023150000_test_pipeline.sql">
+-- Non-destructive table creation to verify automated GitHub deployment
+CREATE TABLE IF NOT EXISTS migration_test (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  status TEXT NOT NULL DEFAULT 'Pipeline Active',
+  tested_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Insert a test ping entry
+INSERT INTO migration_test (status) VALUES ('Pipeline Active');
+</file>
+
+<file path="supabase/migrations/20261023170000_add_effort_categories.sql">
+-- 1. Add category columns to efforts table
+ALTER TABLE efforts 
+ADD COLUMN IF NOT EXISTS gender TEXT DEFAULT 'Male',
+ADD COLUMN IF NOT EXISTS support_type TEXT DEFAULT 'Unsupported',
+ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'Overall';
+
+-- 2. Update existing efforts with accurate category data
+UPDATE efforts 
+SET 
+  gender = 'Male',
+  support_type = 'Self-Supported',
+  category = 'Overall'
+WHERE route_id = 'f5353533-5353-5353-5353-535353535353'; -- 53 Classics
+
+UPDATE efforts 
+SET 
+  gender = 'Male',
+  support_type = 'Unsupported',
+  category = 'Overall'
+WHERE route_id = 'f1111111-1111-1111-1111-111111111111'; -- First Flatiron DEF
+</file>
+
+<file path="supabase/migrations/20261023180000_cleanup_duplicates.sql">
+-- Remove exact duplicate effort records if any exist
+DELETE FROM efforts a
+USING efforts b
+WHERE a.id > b.id
+  AND a.route_id = b.route_id
+  AND a.athlete_id = b.athlete_id
+  AND a.time_seconds = b.time_seconds
+  AND a.activity_date = b.activity_date;
+</file>
+
+<file path="supabase/migrations/20261023190000_def_route_rules_and_categories.sql">
+-- 1. Ensure support_type and gender columns accept all required categories
+ALTER TABLE efforts 
+  DROP CONSTRAINT IF EXISTS check_gender,
+  DROP CONSTRAINT IF EXISTS check_support_type;
+
+ALTER TABLE efforts
+  ADD CONSTRAINT check_gender CHECK (gender IN ('Male', 'Female', 'Non-Binary')),
+  ADD CONSTRAINT check_support_type CHECK (support_type IN ('Supported', 'Unsupported', 'Self-Supported'));
+
+-- 2. Update DEF First Flatiron Route Rules & Definition
+UPDATE routes
+SET rules = '• Supported: A rope is carried and/or used to rappel off the back/descent.
+• Unsupported: No rope or technical gear permitted (ascent and downclimb must be done unroped).
+• Companionship: Running or scrambling with partners is allowed.
+• Strict No-Assistance: Partners or pacers may NOT assist in any way (no physical contact, no sharing/handing off gear, water, or food).'
+WHERE id = 'f1111111-1111-1111-1111-111111111111'; -- First Flatiron DEF Route ID
+</file>
+
+<file path="supabase/migrations/20261023200000_dynamic_route_categories.sql">
+-- 1. Add dynamic JSONB column for route definitions and array column for effort tags
+ALTER TABLE routes ADD COLUMN IF NOT EXISTS category_definitions JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE efforts ADD COLUMN IF NOT EXISTS category_tags TEXT[] DEFAULT ARRAY[]::TEXT[];
+
+-- 2. Configure Custom Categories for First Flatiron (DEF)
+UPDATE routes
+SET category_definitions = '[
+  {
+    "group": "Gender",
+    "definitions": [
+      { "name": "Male" },
+      { "name": "Female" },
+      { "name": "Non-Binary" }
+    ]
+  },
+  {
+    "group": "Support Style",
+    "definitions": [
+      { "name": "Unsupported", "description": "No rope or technical gear carried or used. Ascent and downclimb must be done unroped." },
+      { "name": "Supported", "description": "A rope is carried and/or used for rappelling the descent off the back." }
+    ]
+  }
+]'::jsonb
+WHERE id = 'f1111111-1111-1111-1111-111111111111';
+
+-- 3. Configure Custom Categories for 53 Classics Linkup
+UPDATE routes
+SET category_definitions = '[
+  {
+    "group": "Party Format",
+    "definitions": [
+      { "name": "Team", "description": "Two or more athletes moving continuously together throughout the linkup." },
+      { "name": "Solo", "description": "Single athlete completing all formations unassisted by movement partners." }
+    ]
+  },
+  {
+    "group": "Support Level",
+    "definitions": [
+      { "name": "Self-Supported", "description": "Pre-stashed supplies permitted ahead of time; no active support crew or live hand-offs." },
+      { "name": "Supported", "description": "Active crew, pacers, and live resupply allowed throughout attempt." },
+      { "name": "Unsupported", "description": "Must carry all supplies from start to finish, using only public natural water sources." }
+    ]
+  }
+]'::jsonb
+WHERE id = 'f5353533-5353-5353-5353-535353535353';
+
+-- 4. Tag existing efforts with their route-specific categories
+UPDATE efforts 
+SET category_tags = ARRAY['Male', 'Unsupported']
+WHERE route_id = 'f1111111-1111-1111-1111-111111111111';
+
+UPDATE efforts 
+SET category_tags = ARRAY['Team', 'Self-Supported']
+WHERE route_id = 'f5353533-5353-5353-5353-535353535353';
+</file>
+
+<file path="supabase/migrations/20261023210000_53_classics_categories_and_fkt_rules.sql">
+-- 1. Update 53 Classics Category Definitions
+UPDATE routes
+SET category_definitions = '[
+  {
+    "group": "Gender & Format",
+    "definitions": [
+      { "name": "Male" },
+      { "name": "Female" },
+      { "name": "Non-Binary" },
+      { "name": "Team", "description": "Two or more athletes moving continuously together throughout the linkup." }
+    ]
+  },
+  {
+    "group": "Support Style",
+    "definitions": [
+      { "name": "Unsupported", "description": "No pre-stashed supplies, active crew, pacers, hand-offs, or roped assistance." },
+      { "name": "Supported", "description": "Active crew, pre-stashed supplies, pacers, or live hand-offs permitted." }
+    ]
+  }
+]'::jsonb
+WHERE id = 'f5353533-5353-5353-5353-535353535353';
+
+-- 2. Tag Mike Palmer & Ari's effort as Team + Male + Supported
+UPDATE efforts 
+SET category_tags = ARRAY['Team', 'Male', 'Supported']
+WHERE route_id = 'f5353533-5353-5353-5353-535353535353';
+</file>
+
+<file path="supabase/migrations/20261023220000_route_rules_geojson.sql">
+ALTER TABLE routes 
+ADD COLUMN IF NOT EXISTS rules_markdown TEXT,
+ADD COLUMN IF NOT EXISTS rules_geojson JSONB;
+
+-- Example: Populate 53 Classics with interactive GeoJSON checkpoints and corridors
+UPDATE routes
+SET 
+  rules_markdown = '# 53 Flatiron Classics Linkup Rules & Standards
+
+## 1. Overview & Timing
+The timer starts the moment the athlete leaves the **Chautauqua Ranger Cottage** step threshold and stops upon return to the same point. 
+
+## 2. Required Checkpoints
+Athletes must pass within the designated proximity radius of each formation in sequential order:
+* [Checkpoint 1: First Flatiron Summit](#cp-1) — 10m proximity required. Descent via standard rappel or downclimb.
+* [Checkpoint 2: Third Flatiron Summit](#cp-2) — 15m proximity required.
+* [Freestyle Corridor 1](#zone-1) — Any route between 3rd Flatiron and Green Mountain trail is permitted.
+
+## 3. Category Constraints
+* **Unsupported**: No stashed gear or pacing allowed.
+* **Supported**: Stashed supplies permitted at designated road crossings.',
+
+  rules_geojson = '{
+    "type": "FeatureCollection",
+    "features": [
+      {
+        "type": "Feature",
+        "id": "cp-1",
+        "properties": {
+          "name": "First Flatiron Summit",
+          "type": "checkpoint",
+          "sequence_order": 1,
+          "radius_meters": 10,
+          "description": "Must touch or pass within 10 meters of the highest point."
+        },
+        "geometry": { "type": "Point", "coordinates": [-105.2925, 39.9881] }
+      },
+      {
+        "type": "Feature",
+        "id": "cp-2",
+        "properties": {
+          "name": "Third Flatiron Summit",
+          "type": "checkpoint",
+          "sequence_order": 2,
+          "radius_meters": 15,
+          "description": "Must pass within 15 meters of summit eyebolt."
+        },
+        "geometry": { "type": "Point", "coordinates": [-105.2951, 39.9812] }
+      },
+      {
+        "type": "Feature",
+        "id": "zone-1",
+        "properties": {
+          "name": "3rd Flatiron to Green Mountain Corridor",
+          "type": "freestyle_zone",
+          "description": "Freestyle navigation allowed; any scramble or trail choice permitted."
+        },
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [[
+            [-105.2960, 39.9810],
+            [-105.2990, 39.9820],
+            [-105.2980, 39.9780],
+            [-105.2960, 39.9810]
+          ]]
+        }
+      }
+    ]
+  }'::jsonb
+WHERE id = 'f5353533-5353-5353-5353-535353535353';
+</file>
+
+<file path="types/index.ts">
+export interface Athlete {
+  id: string; // UUID
+  name: string;
+  instagram: string | null;
+  created_at: string; // TIMESTAMPTZ (ISO string)
+}
+
+export interface Route {
+  id: string; // UUID
+  name: string;
+  description: string | null;
+  distance_miles: number | null;
+  elevation_gain_ft: number | null;
+  gpx_url: string | null;
+  created_at: string; // TIMESTAMPTZ (ISO string)
+}
+
+export interface Effort {
+  id: string; // UUID
+  route_id: string; // UUID (Foreign Key)
+  athlete_id: string; // UUID (Foreign Key)
+  time_seconds: number;
+  formatted_time: string;
+  activity_date: string; // DATE (YYYY-MM-DD)
+  gpx_url: string | null;
+  verified: boolean;
+  created_at: string; // TIMESTAMPTZ (ISO string)
+}
+
+// Helper type for joining Efforts with their related Athlete and Route data
+export interface PopulatedEffort extends Effort {
+  athlete?: Athlete;
+  route?: Route;
+}
+</file>
+
+<file path=".gitignore">
+# Dependencies
+/node_modules
+/.pnpm-store
+
+# Next.js build outputs
+/.next/
+/out/
+/build
+/dist
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local environment variables (DO NOT COMMIT SENSITIVE KEYS)
+.env
+.env*.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Operating System files
+.DS_Store
+*.pem
+Thumbs.db
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# TypeScript cache
+*.tsbuildinfo
+next-env.d.ts
+</file>
+
+<file path="postcss.config.js">
+module.exports = {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+</file>
+
+<file path="README.md">
+# fastest-flatties
+Source code for a website to document the history of the fastest flatirons human powered records
+</file>
+
+<file path=".github/workflows/deploy_migrations.yml">
+name: Deploy Supabase Migrations
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'supabase/migrations/**'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link Supabase Project
+        run: supabase link --project-ref ${{ secrets.SUPABASE_PROJECT_ID }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+
+      - name: Apply Migrations
+        run: supabase db push --include-all --linked
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+</file>
+
+<file path="app/athletes/[id]/page.tsx">
+import { supabase } from "@/lib/supabase";
+import { Mountain, ArrowLeft, Trophy, Clock, Calendar, Download } from "lucide-react";
+import Link from "next/link";
+
+export const dynamic = 'force-dynamic';
+
+export default async function AthletePage({ 
+  params 
+}: { 
+  params: Promise<{ id: string }> 
+}) {
+  const { id } = await params;
+
+  // 1. Fetch Athlete Details
+  const { data: athlete, error: athleteError } = await supabase
+    .from("athletes")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (athleteError) {
+    console.error("Athlete Query Error:", athleteError.message);
+  }
+
+  // 2. Fetch all verified efforts by this athlete with Route details
+  const { data: efforts, error: effortError } = await supabase
+    .from("efforts")
+    .select("*, route:routes(*)")
+    .eq("athlete_id", id)
+    .eq("verified", true)
+    .order("activity_date", { ascending: false });
+
+  if (effortError) {
+    console.error("Efforts Query Error:", effortError.message);
+  }
+
+  if (!athlete) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center gap-4">
+        <p className="text-xl font-bold text-slate-300">Athlete not found.</p>
+        <p className="text-sm text-slate-500 font-mono">Query ID: {id}</p>
+        <Link href="/" className="text-emerald-400 hover:underline text-sm">
+          Return to Homepage
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans pb-20">
+      {/* Header Bar */}
+      <div className="border-b border-slate-800 bg-slate-900/80 backdrop-blur-md sticky top-0 z-40">
+        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
+          <Link href="/" className="inline-flex items-center text-sm font-medium text-slate-400 hover:text-emerald-400 transition-colors">
+            <ArrowLeft size={16} className="mr-1.5" /> Back to Home
+          </Link>
+          <span className="text-sm font-bold text-slate-300 flex items-center gap-1.5">
+            <Mountain size={16} className="text-emerald-400" /> Boulder Flatirons
+          </span>
+        </div>
+      </div>
+
+      <div className="max-w-6xl mx-auto px-4 py-8 space-y-10">
+        {/* Athlete Banner */}
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+          <div>
+            <span className="text-xs font-semibold text-emerald-400 uppercase tracking-widest">Athlete Profile</span>
+            <h1 className="text-3xl sm:text-5xl font-black text-white tracking-tight mt-1 mb-2">{athlete.name}</h1>
+            {athlete.instagram && (
+              <a 
+                href={`https://instagram.com/${athlete.instagram.replace('@', '')}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 text-sm text-slate-400 hover:text-emerald-400 transition-colors"
+              >
+                <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                  <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/>
+                </svg>
+                {athlete.instagram}
+              </a>
+            )}
+          </div>
+
+          <div className="flex gap-4">
+            <div className="bg-slate-950 border border-slate-800 px-5 py-3 rounded-xl text-center">
+              <span className="block text-2xl font-black text-amber-400">{efforts?.length || 0}</span>
+              <span className="text-xs text-slate-400 font-medium">Route Records</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Effort History */}
+        <div>
+          <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+            <Trophy size={20} className="text-amber-400" /> Recorded Route Efforts
+          </h2>
+
+          <div className="overflow-x-auto bg-slate-900 rounded-2xl border border-slate-800 shadow-xl">
+            <table className="w-full text-left text-sm text-slate-300">
+              <thead className="bg-slate-950/80 text-xs font-semibold uppercase tracking-wider text-slate-400 border-b border-slate-800">
+                <tr>
+                  <th className="px-6 py-4">Route</th>
+                  <th className="px-6 py-4">Time</th>
+                  <th className="px-6 py-4">Date</th>
+                  <th className="px-6 py-4 text-right">GPX</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60">
+                {efforts && efforts.length > 0 ? (
+                  efforts.map((effort) => (
+                    <tr key={effort.id} className="hover:bg-slate-800/40 transition-colors">
+                      <td className="px-6 py-4 font-semibold text-white">
+                        <Link href={`/routes/${effort.route_id}`} className="hover:text-emerald-400 transition-colors">
+                          {effort.route?.name || "Unknown Route"}
+                        </Link>
+                      </td>
+                      <td className="px-6 py-4 font-mono font-bold text-emerald-400">
+                        <span className="inline-flex items-center gap-1">
+                          <Clock size={14} /> {effort.formatted_time}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-slate-400">
+                        <span className="inline-flex items-center gap-1">
+                          <Calendar size={14} /> {effort.activity_date}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                        {effort.gpx_url && (
+                          <a href={effort.gpx_url} download className="text-slate-400 hover:text-emerald-400 transition-colors inline-block p-1">
+                            <Download size={16} />
+                          </a>
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={4} className="px-6 py-8 text-center text-slate-500">
+                      No verified efforts on record for this athlete.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="app/layout.tsx">
+import type { Metadata } from 'next';
+import './globals.css'; // Make sure Tailwind styles are loaded
+
+export const metadata: Metadata = {
+  title: 'Fastest Fatties - Boulder Flatirons Speed Records',
+  description: 'Community leaderboards, route maps, and speed records for the Boulder Flatirons.',
+};
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <html lang="en">
+      <body className="antialiased bg-slate-950 text-slate-100">{children}</body>
+    </html>
+  );
+}
+</file>
+
+<file path="components/GPXMap.tsx">
+"use client";
+
+import dynamic from 'next/dynamic';
+
+const MapInner = dynamic(() => import('./MapInner'), {
+  ssr: false,
+  loading: () => (
+    <div className="h-96 w-full rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-500">
+      Loading route map...
+    </div>
+  ),
+});
+
+export default function GPXMap({ gpxUrl }: { gpxUrl: string }) {
+  return <MapInner gpxUrl={gpxUrl} />;
+}
+</file>
+
+<file path="supabase/migrations/20261023000000_initial_schema.sql">
+-- Enable UUID Extension
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Athletes Table
+CREATE TABLE IF NOT EXISTS athletes (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  name TEXT NOT NULL,
+  instagram TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Routes Table
+CREATE TABLE IF NOT EXISTS routes (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  name TEXT NOT NULL,
+  description TEXT,
+  distance_miles FLOAT,
+  elevation_gain_ft INTEGER,
+  gpx_url TEXT,
+  start_finish TEXT,
+  rules TEXT,
+  photos TEXT[],
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Efforts Table
+CREATE TABLE IF NOT EXISTS efforts (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  route_id UUID NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
+  athlete_id UUID NOT NULL REFERENCES athletes(id) ON DELETE CASCADE,
+  time_seconds INTEGER NOT NULL,
+  formatted_time TEXT NOT NULL,
+  activity_date DATE NOT NULL,
+  gpx_url TEXT,
+  verified BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Enable Row Level Security (RLS)
+ALTER TABLE routes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE athletes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE efforts ENABLE ROW LEVEL SECURITY;
+
+-- Public Read Access Policies (Safely drop if already created)
+DROP POLICY IF EXISTS "Allow public read access on routes" ON routes;
+CREATE POLICY "Allow public read access on routes" ON routes FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Allow public read access on athletes" ON athletes;
+CREATE POLICY "Allow public read access on athletes" ON athletes FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Allow public read access on efforts" ON efforts;
+CREATE POLICY "Allow public read access on efforts" ON efforts FOR SELECT USING (true);
+</file>
+
+<file path="supabase/migrations/20261023145100_53classics_20261017.sql">
+-- 1. Insert Athletes
+INSERT INTO athletes (id, name, instagram)
+VALUES 
+  ('a2222222-2222-2222-2222-222222222222', 'Mike Palmer', NULL),
+  ('a3333333-3333-3333-3333-333333333333', 'Ari', NULL)
+ON CONFLICT (id) DO NOTHING;
+
+-- 2. Insert 53 Classics Route
+INSERT INTO routes (
+  id, 
+  name, 
+  description, 
+  distance_miles, 
+  elevation_gain_ft, 
+  gpx_url, 
+  start_finish, 
+  rules, 
+  photos
+)
+VALUES (
+  'f5353533-5353-5353-5353-535353535353',
+  '53 Flatiron Classics Linkup',
+  'A massive linkup of 53 classic Flatiron scrambles across the Boulder mountain park system.',
+  28.56,
+  19075,
+  'https://gxoxxbzoykhvjgkbiuwx.supabase.co/storage/v1/object/public/gpx-files/53classics_2026-10-17.gpx',
+  'Starts and finishes at Chautauqua Ranger Cottage.',
+  '• Human-powered movement between all 53 formations.
+• Supported, self-supported, or unsupported attempts permitted.
+• Standard scrambling or roped climbing allowed on all faces.
+• Continuous clock from start to finish.',
+  ARRAY[
+    'https://images.unsplash.com/photo-1598974609653-53d719597274?auto=format&fit=crop&q=80&w=1200'
+  ]
+)
+ON CONFLICT (id) DO UPDATE SET
+  name = EXCLUDED.name,
+  description = EXCLUDED.description,
+  distance_miles = EXCLUDED.distance_miles,
+  elevation_gain_ft = EXCLUDED.elevation_gain_ft,
+  gpx_url = EXCLUDED.gpx_url,
+  start_finish = EXCLUDED.start_finish,
+  rules = EXCLUDED.rules,
+  photos = EXCLUDED.photos;
+
+-- 3. Insert Joint FKT Efforts for Mike Palmer & Ari
+INSERT INTO efforts (route_id, athlete_id, time_seconds, formatted_time, activity_date, gpx_url, verified)
+VALUES 
+  (
+    'f5353533-5353-5353-5353-535353535353',
+    'a2222222-2222-2222-2222-222222222222',
+    100354,
+    '27:52:34',
+    '2026-10-17',
+    'https://gxoxxbzoykhvjgkbiuwx.supabase.co/storage/v1/object/public/gpx-files/53classics_2026-10-17.gpx',
+    TRUE
+  ),
+  (
+    'f5353533-5353-5353-5353-535353535353',
+    'a3333333-3333-3333-3333-333333333333',
+    100354,
+    '27:52:34',
+    '2026-10-17',
+    'https://gxoxxbzoykhvjgkbiuwx.supabase.co/storage/v1/object/public/gpx-files/53classics_2026-10-17.gpx',
+    TRUE
+  );
+</file>
+
+<file path="tailwind.config.js">
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: [
+    "./app/**/*.{js,ts,jsx,tsx,mdx}",
+    "./components/**/*.{js,ts,jsx,tsx,mdx}",
+  ],
+  theme: {
+    extend: {
+      colors: {
+        sandstone: {
+          950: '#15100d', // Deepest Flatiron shadow
+          900: '#211813', // Main card background
+          800: '#33261e', // Card border & subtle highlights
+          700: '#4a372c', // Input borders & dividers
+          400: '#ab9585', // Muted text
+          200: '#d9cdc1', // Secondary text
+          100: '#f4efe9', // Primary parchment text
+        },
+        flatiron: {
+          red: '#c04a29',   // Classic Flatiron iron-oxide red
+          rust: '#993418',  // Darker terracotta
+          ochre: '#d97706', // Warm golden sandstone
+          gold: '#f59e0b',  // FKT / Record rank highlight
+        }
+      },
+      fontFamily: {
+        serif: ['Georgia', 'Garamond', 'Times New Roman', 'serif'],
+        mono: ['"Courier New"', 'Courier', 'monospace'],
+        sans: ['"Trebuchet MS"', 'Geneva', 'Tahoma', 'sans-serif'],
+      }
+    },
+  },
+  plugins: [],
+}
+</file>
+
+<file path="tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": [
+        "./*"
+      ]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts",
+    "**/*.mts",
+    "**/*.ts",
+    "**/*.tsx"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}
+</file>
+
+<file path="app/globals.css">
+@import "leaflet/dist/leaflet.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-sandstone-950 text-sandstone-100 font-serif antialiased;
+    background-color: #15100d;
+    background-image: radial-gradient(#33261e 0.75px, transparent 0.75px);
+    background-size: 24px 24px;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-serif font-bold tracking-normal text-sandstone-100;
+  }
+}
+
+/* Custom retro scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #15100d;
+}
+::-webkit-scrollbar-thumb {
+  background: #33261e;
+  border: 1px solid #4a372c;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #c04a29;
+}
+</file>
+
+<file path="package.json">
+{
+  "name": "fastest-flatties",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "sync-leaderboards": "tsx scripts/sync-leaderboards.ts",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.118.0",
+    "@turf/turf": "^6.5.0",
+    "gpxparser": "^3.0.8",
+    "leaflet": "^1.9.4",
+    "lucide-react": "^1.61.0",
+    "next": "^16.4.3",
+    "node-fetch": "^3.3.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-leaflet": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.22",
+    "@types/node": "26.6.5",
+    "@types/react": "19.3.0",
+    "autoprefixer": "^10.6.1",
+    "postcss": "^8.5.31",
+    "tailwindcss": "^3.4.19",
+    "tsx": "^4.7.0",
+    "typescript": "7.0.2"
+  }
+}
+</file>
+
+<file path="components/MapInner.tsx">
+"use client";
+
+import { useEffect, useState } from 'react';
+import { MapContainer, TileLayer, Polyline, useMap } from 'react-leaflet';
+import GpxParser from 'gpxparser';
+
+interface MapInnerProps {
+  gpxUrl: string;
+}
+
+function AutoFitBounds({ positions }: { positions: [number, number][] }) {
+  const map = useMap();
+  useEffect(() => {
+    if (positions.length > 0) {
+      map.fitBounds(positions, { padding: [30, 30] });
+    }
+  }, [map, positions]);
+  return null;
+}
+
+export default function MapInner({ gpxUrl }: MapInnerProps) {
+  const [positions, setPositions] = useState<[number, number][]>([]);
+
+  useEffect(() => {
+    async function fetchGPX() {
+      try {
+        const response = await fetch(gpxUrl);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch GPX: ${response.statusText}`);
+        }
+        const gpxText = await response.text();
+        
+        // Parse GPX text
+        const gpx = new GpxParser();
+        gpx.parse(gpxText);
+
+        if (gpx.tracks && gpx.tracks.length > 0 && gpx.tracks[0].points) {
+          const trackPoints = gpx.tracks[0].points.map(
+            (pt) => [pt.lat, pt.lon] as [number, number]
+          );
+          setPositions(trackPoints);
+        }
+      } catch (err) {
+        console.error("GPX map render error:", err);
+      }
+    }
+
+    if (gpxUrl) {
+      fetchGPX();
+    }
+  }, [gpxUrl]);
+
+  // Fallback map center: First Flatiron, Boulder CO
+  const defaultCenter: [number, number] = [39.9888, -105.2931];
+
+  return (
+    <div className="h-[400px] w-full rounded-2xl overflow-hidden border border-slate-800 shadow-xl relative z-0 bg-slate-900">
+      <MapContainer
+        center={defaultCenter}
+        zoom={14}
+        scrollWheelZoom={false}
+        className="h-full w-full"
+      >
+        <TileLayer
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
+        {positions.length > 0 && (
+          <>
+            <Polyline 
+              positions={positions} 
+              color="#c04a29" 
+              weight={4} 
+              opacity={0.95} 
+            />
+            <AutoFitBounds positions={positions} />
+          </>
+        )}
+      </MapContainer>
+    </div>
+  );
+}
+</file>
+
+<file path="app/page.tsx">
+import { supabase } from "@/lib/supabase";
+import { Mountain, MapPin, TrendingUp, Trophy, ArrowRight } from "lucide-react";
+import Link from "next/link";
+
+export const dynamic = 'force-dynamic';
+
+export default async function HomePage() {
+  // Fetch all routes from database
+  const { data: routes } = await supabase
+    .from("routes")
+    .select("*, efforts(*, athlete:athletes(*))")
+    .order("name", { ascending: true });
+
+  return (
+    <div className="min-h-screen bg-sandstone-950 text-sandstone-100 font-serif pb-20">
+      {/* Header Bar */}
+      <div className="border-b-2 border-flatiron-red/40 bg-sandstone-900/90 backdrop-blur-md sticky top-0 z-40 shadow-lg">
+        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
+          <span className="font-serif text-xl font-bold text-sandstone-100 flex items-center gap-2 tracking-tight">
+            <Mountain size={22} className="text-flatiron-red" /> FASTEST FATTIES
+          </span>
+          <span className="font-mono text-xs text-flatiron-ochre uppercase tracking-widest border border-sandstone-800 bg-sandstone-950 px-3 py-1">
+            Boulder Flatiron Records
+          </span>
+        </div>
+      </div>
+
+      <div className="max-w-6xl mx-auto px-4 py-10 space-y-12">
+        {/* Banner Hero */}
+        <div className="bg-sandstone-900 border-2 border-sandstone-800 p-8 sm:p-12 shadow-2xl space-y-4 text-center sm:text-left relative overflow-hidden">
+          <div className="absolute top-0 right-0 p-8 opacity-10 pointer-events-none">
+            <Mountain size={280} className="text-sandstone-100" />
+          </div>
+
+          <span className="font-mono text-xs text-flatiron-ochre uppercase tracking-widest block">
+            EST. BOULDER, COLORADO — SPEED SCRAMBLING DIRECTORY
+          </span>
+          <h1 className="text-4xl sm:text-6xl font-serif font-black text-sandstone-100 tracking-tight leading-none">
+            Boulder Flatiron FKTs
+          </h1>
+          <p className="text-sandstone-200 text-lg leading-relaxed italic max-w-2xl font-serif">
+            The definitive record system for classic Flatiron scrambles, linkups, and speed efforts across the Boulder Mountain Parks.
+          </p>
+        </div>
+
+        {/* Route Cards Grid */}
+        <div>
+          <div className="flex items-center justify-between mb-6 border-b-2 border-sandstone-800 pb-2">
+            <h2 className="text-2xl font-serif font-bold text-sandstone-100 flex items-center gap-2">
+              <Trophy size={20} className="text-flatiron-gold" /> Official Flatiron Routes
+            </h2>
+            <span className="font-mono text-xs text-sandstone-400 uppercase">
+              {routes?.length || 0} ROUTES LISTED
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            {routes && routes.length > 0 ? (
+              routes.map((route) => {
+                // Find fastest effort for route display card
+                const verifiedEfforts = route.efforts?.filter((e: { verified: boolean }) => e.verified) || [];
+                const fastestEffort = verifiedEfforts.sort((a: { time_seconds: number }, b: { time_seconds: number }) => a.time_seconds - b.time_seconds)[0];
+
+                // Group athletes if FKT is held jointly
+                const coHolders = fastestEffort 
+                  ? verifiedEfforts.filter((e: { time_seconds: number; activity_date: string }) => e.time_seconds === fastestEffort.time_seconds && e.activity_date === fastestEffort.activity_date)
+                  : [];
+
+                const recordHolderName = coHolders.length > 0
+                  ? coHolders.map((c: { athlete?: { name: string } }) => c.athlete?.name).filter(Boolean).join(" & ")
+                  : "Unclaimed";
+
+                return (
+                  <div key={route.id} className="bg-sandstone-900 border-2 border-sandstone-800 shadow-2xl flex flex-col justify-between hover:border-flatiron-red/80 transition-colors group">
+                    <div className="p-6 space-y-4">
+                      <div className="flex justify-between items-start gap-4">
+                        <h3 className="text-2xl font-serif font-bold text-sandstone-100 group-hover:text-flatiron-red transition-colors">
+                          {route.name}
+                        </h3>
+                      </div>
+
+                      <p className="text-sandstone-300 text-sm italic font-serif line-clamp-2">
+                        "{route.description}"
+                      </p>
+
+                      <div className="flex flex-wrap gap-4 font-mono text-xs text-sandstone-300 bg-sandstone-950 border border-sandstone-800 p-3">
+                        <span className="flex items-center gap-1.5 text-flatiron-ochre">
+                          <MapPin size={14} /> <strong className="text-sandstone-100">{route.distance_miles} MILES</strong>
+                        </span>
+                        <span>|</span>
+                        <span className="flex items-center gap-1.5 text-flatiron-ochre">
+                          <TrendingUp size={14} /> <strong className="text-sandstone-100">{route.elevation_gain_ft} FT GAIN</strong>
+                        </span>
+                      </div>
+
+                      <div className="bg-sandstone-950/80 border border-sandstone-800 p-4 space-y-1">
+                        <span className="font-mono text-[10px] uppercase text-sandstone-400 block tracking-widest">
+                          CURRENT RECORD HOLDER
+                        </span>
+                        <div className="flex items-center justify-between font-mono text-xs">
+                          <span className="font-serif font-bold text-sandstone-100 text-sm">
+                            {recordHolderName}
+                          </span>
+                          <span className="font-bold text-flatiron-red">
+                            {fastestEffort ? fastestEffort.formatted_time : "--:--:--"}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="border-t-2 border-sandstone-800 bg-sandstone-950/50 px-6 py-3">
+                      <Link 
+                        href={`/routes/${route.id}`} 
+                        className="inline-flex items-center justify-between w-full font-mono text-xs text-sandstone-300 hover:text-flatiron-red transition-colors uppercase font-bold"
+                      >
+                        <span>[ View Leaderboard & Route Map ]</span>
+                        <ArrowRight size={14} />
+                      </Link>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="col-span-2 bg-sandstone-900 border-2 border-sandstone-800 p-12 text-center font-mono text-xs text-sandstone-400">
+                [ NO ROUTES POPULATED IN DATABASE YET ]
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="app/routes/[id]/page.tsx">
+import { supabase } from "@/lib/supabase";
+import GPXMap from "@/components/GPXMap";
+import dynamicImport from "next/dynamic";
+import { 
+  Mountain, 
+  MapPin, 
+  Trophy, 
+  Clock, 
+  Download, 
+  ArrowLeft, 
+  History,
+  Tag,
+  BookOpen
+} from "lucide-react";
+import Link from "next/link";
+
+export const dynamic = 'force-dynamic';
+
+// Dynamically import RouteRulesSection with SSR disabled for Leaflet compatibility
+const RouteRulesSection = dynamicImport(
+  () => import("@/components/RouteRulesSection"),
+  { ssr: false }
+);
+
+function formatTimeDiff(seconds: number) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `-${h}h ${m}m ${s}s`;
+  if (m > 0) return `-${m}m ${s}s`;
+  return `-${s}s`;
+}
+
+type CategoryDefinition = {
+  group: string;
+  definitions: Array<{ name: string; description?: string }>;
+};
+
+type GroupedEffort = {
+  id: string;
+  time_seconds: number;
+  formatted_time: string;
+  activity_date: string;
+  gpx_url?: string;
+  category_tags: string[];
+  athletes: Array<{ id: string; name: string }>;
+  timeDiff?: string;
+  isRecordBreaker?: boolean;
+};
+
+export default async function RoutePage({ 
+  params 
+}: { 
+  params: Promise<{ id: string }> 
+}) {
+  const { id } = await params;
+
+  // 1. Fetch Route
+  const { data: route, error: routeError } = await supabase
+    .from("routes")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (routeError) {
+    console.error("Supabase Route Query Error:", routeError.message);
+  }
+
+  // 2. Fetch Verified Efforts ordered by date
+  const { data: rawEfforts, error: effortError } = await supabase
+    .from("efforts")
+    .select("*, athlete:athletes(*)")
+    .eq("route_id", id)
+    .eq("verified", true)
+    .order("activity_date", { ascending: true })
+    .order("time_seconds", { ascending: true });
+
+  if (effortError) {
+    console.error("Supabase Efforts Query Error:", effortError.message);
+  }
+
+  if (!route) {
+    return (
+      <div className="min-h-screen bg-sandstone-950 text-sandstone-100 font-serif flex flex-col items-center justify-center gap-4">
+        <p className="text-xl font-bold text-sandstone-400">Route not found in database.</p>
+        <p className="text-sm text-sandstone-400 font-mono">Query ID: {id}</p>
+        <Link href="/" className="text-flatiron-red hover:underline text-sm font-mono">
+          [ Return to Homepage ]
+        </Link>
+      </div>
+    );
+  }
+
+  // Group joint efforts
+  const groupedMap = new Map<string, GroupedEffort>();
+
+  if (rawEfforts) {
+    rawEfforts.forEach((e) => {
+      const groupKey = `${e.time_seconds}_${e.activity_date}_${(e.category_tags || []).join('-')}`;
+      if (groupedMap.has(groupKey)) {
+        const existing = groupedMap.get(groupKey)!;
+        if (e.athlete && !existing.athletes.some(a => a.id === e.athlete.id)) {
+          existing.athletes.push({ id: e.athlete.id, name: e.athlete.name });
+        }
+      } else {
+        groupedMap.set(groupKey, {
+          id: e.id,
+          time_seconds: e.time_seconds,
+          formatted_time: e.formatted_time,
+          activity_date: e.activity_date,
+          gpx_url: e.gpx_url,
+          category_tags: e.category_tags || [],
+          athletes: e.athlete ? [{ id: e.athlete.id, name: e.athlete.name }] : []
+        });
+      }
+    });
+  }
+
+  const groupedEfforts = Array.from(groupedMap.values());
+  const leaderboard = [...groupedEfforts].sort((a, b) => a.time_seconds - b.time_seconds);
+
+  // FKT History Calculation with Cross-Support Validation Rule
+  const fastestTimes: Record<string, number> = {}; 
+  const recordHistory: GroupedEffort[] = [];
+
+  groupedEfforts.forEach((effort) => {
+    const isSupported = effort.category_tags.includes("Supported");
+    const isUnsupported = effort.category_tags.includes("Unsupported");
+
+    const primaryCat = effort.category_tags.find(t => 
+      ["Male", "Female", "Non-Binary", "Team"].includes(t)
+    ) || "Overall";
+
+    const catSupportedKey = `${primaryCat}_Supported`;
+    const catUnsupportedKey = `${primaryCat}_Unsupported`;
+
+    const prevSupportedBest = fastestTimes[catSupportedKey] || Infinity;
+    const currentUnsupportedBest = fastestTimes[catUnsupportedKey] || Infinity;
+
+    let qualifiesAsRecord = false;
+
+    if (isUnsupported) {
+      if (effort.time_seconds < currentUnsupportedBest) {
+        qualifiesAsRecord = true;
+        fastestTimes[catUnsupportedKey] = effort.time_seconds;
+      }
+    } else if (isSupported) {
+      if (
+        effort.time_seconds < prevSupportedBest && 
+        effort.time_seconds < currentUnsupportedBest
+      ) {
+        qualifiesAsRecord = true;
+        fastestTimes[catSupportedKey] = effort.time_seconds;
+      }
+    } else {
+      const genKey = `${primaryCat}_Overall`;
+      if (effort.time_seconds < (fastestTimes[genKey] || Infinity)) {
+        qualifiesAsRecord = true;
+        fastestTimes[genKey] = effort.time_seconds;
+      }
+    }
+
+    if (qualifiesAsRecord) {
+      recordHistory.push({
+        ...effort,
+        isRecordBreaker: true
+      });
+    }
+  });
+
+  recordHistory.reverse();
+
+  const categoryGroups: CategoryDefinition[] = route.category_definitions || [];
+
+  return (
+    <div className="min-h-screen bg-sandstone-950 text-sandstone-100 font-serif pb-20">
+      {/* Header Bar */}
+      <div className="border-b-2 border-flatiron-red/40 bg-sandstone-900/90 backdrop-blur-md sticky top-0 z-40 shadow-lg">
+        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
+          <Link href="/" className="inline-flex items-center font-mono text-xs uppercase tracking-widest text-sandstone-400 hover:text-flatiron-red transition-colors">
+            <ArrowLeft size={14} className="mr-1.5" /> [ Back to Directory ]
+          </Link>
+          <span className="font-serif text-lg font-bold text-sandstone-100 flex items-center gap-2">
+            <Mountain size={18} className="text-flatiron-red" /> FASTEST FATTIES
+          </span>
+        </div>
+      </div>
+
+      <div className="max-w-6xl mx-auto px-4 py-8 space-y-12">
+        {/* Banner */}
+        <div className="bg-sandstone-900 border-2 border-sandstone-800 p-8 shadow-2xl space-y-4">
+          <span className="font-mono text-xs text-flatiron-ochre uppercase tracking-widest block">
+            === BOULDER FLATIRON SPEED RECORD ROUTE ===
+          </span>
+          <h1 className="text-4xl sm:text-6xl font-serif font-bold text-sandstone-100 tracking-tight">
+            {route.name}
+          </h1>
+          <p className="text-sandstone-200 text-lg leading-relaxed italic border-l-2 border-flatiron-red pl-4">
+            "{route.description}"
+          </p>
+          
+          <div className="flex flex-wrap gap-6 font-mono text-xs text-sandstone-100 bg-sandstone-950 border border-sandstone-800 p-3 inline-flex uppercase">
+            <span className="text-flatiron-ochre">DIST: <strong className="text-sandstone-100">{route.distance_miles} MILES</strong></span>
+            <span>|</span>
+            <span className="text-flatiron-ochre">ELEV: <strong className="text-sandstone-100">{route.elevation_gain_ft} FT GAIN</strong></span>
+          </div>
+        </div>
+
+        {/* Dynamic Category Definitions */}
+        {categoryGroups.length > 0 && (
+          <div className="bg-sandstone-900 border-2 border-sandstone-800 p-6 shadow-xl space-y-6">
+            <h3 className="text-xl font-serif font-bold text-sandstone-100 flex items-center gap-2">
+              <Tag size={20} className="text-flatiron-ochre" /> Route Category Definitions
+            </h3>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {categoryGroups.map((group) => (
+                <div key={group.group} className="bg-sandstone-950 border border-sandstone-800 p-4 space-y-3">
+                  <span className="font-mono text-xs font-bold text-flatiron-ochre uppercase border-b border-sandstone-800 block pb-1">
+                    {group.group}
+                  </span>
+                  <ul className="space-y-2">
+                    {group.definitions.map((def) => (
+                      <li key={def.name} className="text-xs font-serif">
+                        <strong className="text-sandstone-100 uppercase font-mono mr-1.5">{def.name}:</strong>
+                        <span className="text-sandstone-300">{def.description || "Standard route category."}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Interactive Rules & Specification Document with Geofenced Map */}
+        <div>
+          <h2 className="text-2xl font-serif font-bold text-sandstone-100 mb-4 flex items-center gap-2">
+            <BookOpen size={22} className="text-flatiron-red" /> Interactive Route Specification & Map
+          </h2>
+          <RouteRulesSection
+            gpxUrl={route.gpx_url}
+            rulesMarkdown={route.rules_markdown}
+            rulesGeoJSON={route.rules_geojson}
+          />
+        </div>
+
+        {/* Current Speed Leaderboard */}
+        <div>
+          <h2 className="text-2xl font-serif font-bold text-sandstone-100 mb-4 flex items-center gap-2">
+            <Trophy size={22} className="text-flatiron-gold" /> Current Leaderboard
+          </h2>
+
+          <div className="overflow-x-auto bg-sandstone-900 border-2 border-sandstone-800 shadow-2xl">
+            <table className="w-full text-left font-mono text-xs text-sandstone-200">
+              <thead className="bg-sandstone-950 text-flatiron-ochre uppercase border-b-2 border-sandstone-800">
+                <tr>
+                  <th className="px-6 py-4">RANK</th>
+                  <th className="px-6 py-4">ATHLETE(S)</th>
+                  <th className="px-6 py-4">CATEGORIES</th>
+                  <th className="px-6 py-4">TIME</th>
+                  <th className="px-6 py-4">DATE</th>
+                  <th className="px-6 py-4 text-right">GPX</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-sandstone-800">
+                {leaderboard.length > 0 ? (
+                  leaderboard.map((effort, idx) => (
+                    <tr key={effort.id} className="hover:bg-sandstone-800/50 transition-colors">
+                      <td className="px-6 py-4 font-bold text-flatiron-gold text-sm">
+                        {idx === 0 ? "01 [FKT 👑]" : `#0${idx + 1}`}
+                      </td>
+                      <td className="px-6 py-4 font-serif text-base font-bold text-sandstone-100">
+                        {effort.athletes.map((a, aIdx) => (
+                          <span key={a.id}>
+                            <Link href={`/athletes/${a.id}`} className="hover:text-flatiron-red transition-colors">
+                              {a.name}
+                            </Link>
+                            {aIdx < effort.athletes.length - 1 && " & "}
+                          </span>
+                        ))}
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex gap-1.5 flex-wrap">
+                          {effort.category_tags.map((tag) => (
+                            <span key={tag} className="bg-sandstone-950 border border-sandstone-700 text-sandstone-200 px-2 py-0.5 rounded text-[10px] uppercase font-bold">
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 font-bold text-flatiron-red text-sm">
+                        <span className="inline-flex items-center gap-1">
+                          <Clock size={13} /> {effort.formatted_time}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-sandstone-400">{effort.activity_date}</td>
+                      <td className="px-6 py-4 text-right">
+                        {effort.gpx_url && (
+                          <a href={effort.gpx_url} download className="text-sandstone-400 hover:text-flatiron-red font-mono text-xs underline">
+                            [DOWNLOAD]
+                          </a>
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={6} className="px-6 py-8 text-center text-sandstone-400 font-mono">
+                      [ NO VERIFIED EFFORTS RECORDED YET ]
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* FKT Progression Timeline */}
+        <div>
+          <h2 className="text-2xl font-serif font-bold text-sandstone-100 mb-2 flex items-center gap-2">
+            <History size={22} className="text-flatiron-ochre" /> Verified FKT Progression History
+          </h2>
+          <p className="font-mono text-xs text-sandstone-400 mb-4">
+            * Supported attempts only qualify as record-breakers if they surpass the existing Unsupported time for that category.
+          </p>
+
+          <div className="bg-sandstone-900 border-2 border-sandstone-800 p-6 shadow-2xl">
+            {recordHistory.length > 0 ? (
+              <div className="relative border-l-2 border-sandstone-800 ml-4 space-y-6 pl-6">
+                {recordHistory.map((rec) => (
+                  <div key={rec.id} className="relative group">
+                    <div className="absolute -left-[31px] top-1.5 w-3 h-3 bg-flatiron-red border-2 border-sandstone-950 rounded-full group-hover:scale-125 transition-transform" />
+                    
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-sandstone-950 border border-sandstone-800 p-4">
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="font-serif font-bold text-lg text-sandstone-100">
+                            {rec.athletes.map((a, aIdx) => (
+                              <span key={a.id}>
+                                {a.name}
+                                {aIdx < rec.athletes.length - 1 && " & "}
+                              </span>
+                            ))}
+                          </span>
+                        </div>
+                        <div className="font-mono text-xs text-sandstone-400 flex items-center gap-2 flex-wrap">
+                          <span>DATE: {rec.activity_date}</span>
+                          <span>|</span>
+                          <div className="flex gap-1">
+                            {rec.category_tags.map(t => (
+                              <span key={t} className="text-flatiron-ochre uppercase font-bold bg-sandstone-900 px-1.5 py-0.5 border border-sandstone-800">
+                                {t}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="font-mono text-xl font-bold text-flatiron-red">
+                        {rec.formatted_time}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="font-mono text-xs text-sandstone-400 text-center py-4">
+                [ NO HISTORICAL FKT PROGRESSION RECORDED ]
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+</file>
+
+</files>
